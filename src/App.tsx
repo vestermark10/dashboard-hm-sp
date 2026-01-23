@@ -76,10 +76,10 @@ export default function App()
     const fetchAllData = async () => {
       try {
         const [telephonyRes, jiraSupportRes, jiraOrdersRes, economicRes] = await Promise.all([
-          axios.get<TelephonyResponse>("http://localhost:3001/api/telephony/support"),
-          axios.get<JiraSupportResponse>("http://localhost:3001/api/jira/support"),
-          axios.get<JiraOrdersPipelineResponse>("http://localhost:3001/api/jira/orders-pipeline"),
-          axios.get<EconomicResponse>("http://localhost:3001/api/economic/open-posts")
+          axios.get<TelephonyResponse>("http://192.168.1.130:3001/api/telephony/support"),
+          axios.get<JiraSupportResponse>("http://192.168.1.130:3001/api/jira/support"),
+          axios.get<JiraOrdersPipelineResponse>("http://192.168.1.130:3001/api/jira/orders-pipeline"),
+          axios.get<EconomicResponse>("http://192.168.1.130:3001/api/economic/open-posts")
         ]);
 
         setTelephony(telephonyRes.data);
