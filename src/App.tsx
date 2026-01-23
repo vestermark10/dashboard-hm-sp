@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import axios from "axios";
+import { API_BASE_URL } from "./config";
 
 type TelephonySide =
 {
@@ -76,10 +77,10 @@ export default function App()
     const fetchAllData = async () => {
       try {
         const [telephonyRes, jiraSupportRes, jiraOrdersRes, economicRes] = await Promise.all([
-          axios.get<TelephonyResponse>("http://192.168.1.130:3001/api/telephony/support"),
-          axios.get<JiraSupportResponse>("http://192.168.1.130:3001/api/jira/support"),
-          axios.get<JiraOrdersPipelineResponse>("http://192.168.1.130:3001/api/jira/orders-pipeline"),
-          axios.get<EconomicResponse>("http://192.168.1.130:3001/api/economic/open-posts")
+          axios.get<TelephonyResponse>(`${API_BASE_URL}/api/telephony/support`),
+          axios.get<JiraSupportResponse>(`${API_BASE_URL}/api/jira/support`),
+          axios.get<JiraOrdersPipelineResponse>(`${API_BASE_URL}/api/jira/orders-pipeline`),
+          axios.get<EconomicResponse>(`${API_BASE_URL}/api/economic/open-posts`)
         ]);
 
         setTelephony(telephonyRes.data);
