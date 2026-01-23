@@ -15,3 +15,4 @@ build
 # editor
 .vscode
 .idea
+.claude/settings.local.json
