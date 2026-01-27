@@ -121,27 +121,16 @@ class OneConnectScraper {
             console.log('OneConnect: Nuværende URL:', this.page.url());
 
             // Luk popup-dialog hvis den er der (Find "Fortsæt" knap)
+            // Loop indtil ingen flere matching buttons findes
             try {
                 console.log('OneConnect: Leder efter popup dialogen...');
-                const outerButtons = Array.from(document.querySelectorAll('button'));
-                outerButtons.forEach((button, i) => {
-                    console.log(button.textContent);
-                });
 
-                const closeButton = await this.page.evaluate(() => {
-                    const buttons = Array.from(document.querySelectorAll('button'));
-                    const button = buttons.find(btn =>
-                        btn.textContent.includes('Fortsæt') ||
-                        btn.textContent.includes('Luk') ||
-                        btn.textContent.includes('Continue') ||
-                        btn.textContent.includes('Finish')
-                    );
-                    return button ? button.outerHTML : null;
-                });
+                let foundButton = true;
+                let clickCount = 0;
+                const maxClicks = 4; // Sikkerhedsgrænse for at undgå uendelig loop
 
-                if (closeButton) {
-                    console.log('OneConnect: Lukker popup dialog...');
-                    await this.page.evaluate(() => {
+                while (foundButton && clickCount < maxClicks) {
+                    foundButton = await this.page.evaluate(() => {
                         const buttons = Array.from(document.querySelectorAll('button'));
                         const button = buttons.find(btn =>
                             btn.textContent.includes('Fortsæt') ||
@@ -149,20 +138,36 @@ class OneConnectScraper {
                             btn.textContent.includes('Continue') ||
                             btn.textContent.includes('Finish')
                         );
-                        if (button) button.click();
+
+                        if (button) {
+                            button.click();
+                            return true;
+                        }
+                        return false;
                     });
-                    await new Promise(resolve => setTimeout(resolve, 2000));
+
+                    if (foundButton) {
+                        clickCount++;
+                        console.log(`OneConnect: Lukkede popup dialog (${clickCount})...`);
+                        await new Promise(resolve => setTimeout(resolve, 500));
+                    }
+                }
+
+                if (clickCount === 0) {
+                    console.log('OneConnect: Ingen popup fundet.');
+                } else if (clickCount >= maxClicks) {
+                    console.log('OneConnect: Nåede max antal popup-klik.');
                 } else {
-                    console.log('OneConnect: Lukkede ikke popup.');
+                    console.log('OneConnect: Alle popups lukket.');
                 }
             } catch (err) {
-                console.log('OneConnect: Ingen popup fundet: ' + err.message);
+                console.log('OneConnect: Fejl ved popup håndtering: ' + err.message);
             }
 
             // Find og klik på første dashboard card
             console.log('OneConnect: Finder dashboard cards...');
             try {
-                await this.page.waitForSelector('.q-card, [class*="card"]', {timeout: 5000});
+                await this.page.waitForSelector('.q-card, [class*="card"]', { timeout: 5000 });
 
                 // Klik på første dashboard card (Hallmonitor)
                 await this.page.evaluate(() => {
@@ -179,7 +184,7 @@ class OneConnectScraper {
             }
 
             // Vent på at dashboard er loaded - vent på widget-queue elementer
-            await this.page.waitForSelector('.widget-queue', {timeout: 10000});
+            await this.page.waitForSelector('.widget-queue', { timeout: 10000 });
 
             console.log('OneConnect: Scraper kø data...');
 
@@ -215,13 +220,13 @@ class OneConnectScraper {
                             const value = sizeEl.textContent.trim();
 
                             // Map tab titles til vores format
-                            if (title === 'KØ') {
+                            if (title === 'KØ' || title === 'QUEUE') {
                                 stats.queue = parseInt(value) || 0;
-                            } else if (title === 'MISTET') {
+                            } else if (title === 'MISTET' || title === 'MISSED') {
                                 stats.lost = parseInt(value) || 0;
-                            } else if (title === 'BESVARET') {
+                            } else if (title === 'BESVARET' || title === 'ANSWERED') {
                                 stats.answered = parseInt(value) || 0;
-                            } else if (title === 'SVARPROCENT') {
+                            } else if (title === 'SVARPROCENT' || title === 'ANSWER RATE') {
                                 stats.answerRate = parseInt(value.replace('%', '')) || 0;
                             }
                         });
@@ -229,7 +234,7 @@ class OneConnectScraper {
                         // Ekstraher agent info fra "Tilmeldte (X/Y)" tekst
                         const topBarText = widget.querySelector('.top-bar .small-text');
                         if (topBarText) {
-                            const match = topBarText.textContent.match(/Tilmeldte \((\d+)\/(\d+)\)/);
+                            const match = topBarText.textContent.match(/(?:Tilmeldte|Registered) \((\d+)\/(\d+)\)/);
                             if (match) {
                                 const active = parseInt(match[1]);
                                 const total = parseInt(match[2]);
@@ -247,11 +252,11 @@ class OneConnectScraper {
 
                                     const count = parseInt(content.textContent.trim()) || 0;
 
-                                    if (title.includes('Ledige')) {
+                                    if (title.includes('Ledige') || title.includes('Available')) {
                                         ready = count;
-                                    } else if (title.includes('Optagede')) {
+                                    } else if (title.includes('Optagede') || title.includes('Busy')) {
                                         busy = count;
-                                    } else if (title.includes('Inaktive')) {
+                                    } else if (title.includes('Inaktive') || title.includes('Not active')) {
                                         other = count;
                                     }
                                 });
