@@ -125,7 +125,9 @@ class OneConnectScraper {
           const buttons = Array.from(document.querySelectorAll('button'));
           const button = buttons.find(btn =>
             btn.textContent.includes('Fortsæt') ||
-            btn.textContent.includes('Luk')
+            btn.textContent.includes('Luk') ||
+            btn.textContent.includes('Continue') ||
+            btn.textContent.includes('Finish')
           );
           return button ? button.outerHTML : null;
         });
