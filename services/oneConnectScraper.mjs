@@ -120,8 +120,12 @@ class OneConnectScraper {
 
       // Luk popup-dialog hvis den er der (Find "Fortsæt" knap)
       try {
-        console.log('OneConnect: Leder efter popup dialog...');
+        console.log('OneConnect: Leder efter popup dialogen...');
         const outerButtons = Array.from(document.querySelectorAll('button'));
+          outerButtons.forEach((button, i) => {
+              console.log(button.textContent);
+          });
+
         const closeButton = await this.page.evaluate(() => {
           const buttons = Array.from(document.querySelectorAll('button'));
           const button = buttons.find(btn =>
@@ -147,10 +151,7 @@ class OneConnectScraper {
           });
           await new Promise(resolve => setTimeout(resolve, 2000));
         } else {
-            console.log('OneConnect: Lukkede ikke popup. Knapper fundet: ');
-            outerButtons.forEach((button, i) => {
-                console.log(button.textContent);
-            });
+            console.log('OneConnect: Lukkede ikke popup.');
         }
       } catch (err) {
         console.log('OneConnect: Ingen popup fundet');
