@@ -8,8 +8,7 @@ import puppeteer from 'puppeteer';
  */
 
 class OneConnectScraper {
-  constructor() {
-    this.loginUrl = 'https://login.one-connect.dk/Account/Login';
+
     constructor() {
         this.loginUrl = 'https://login.one-connect.dk/Account/Login';
         this.dashboardUrl = 'https://dashboard.one-connect.dk/dashboard';
