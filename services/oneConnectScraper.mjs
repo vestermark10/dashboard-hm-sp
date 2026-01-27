@@ -155,7 +155,7 @@ class OneConnectScraper {
             console.log('OneConnect: Lukkede ikke popup.');
         }
       } catch (err) {
-        console.log('OneConnect: Ingen popup fundet');
+        console.log('OneConnect: Ingen popup fundet: ' + err.message);
       }
 
       // Find og klik på første dashboard card
