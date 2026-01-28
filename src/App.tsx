@@ -9,6 +9,8 @@ type TelephonySide =
   lost: number;
   answered: number;
   answerRate: number;
+  maxWaitToday: string;
+  avgWait: string;
   agents: {
     ready: number;
     busy: number;
@@ -172,7 +174,6 @@ export default function App()
               />
               <QueueStatsRow
                 items={[
-                  { label: "KØ", value: fmt(hm?.queue ?? 0) },
                   { label: "MISTET", value: fmt(hm?.lost ?? 0) },
                   { label: "BESVARET", value: fmt(hm?.answered ?? 0) },
                   {
@@ -180,6 +181,7 @@ export default function App()
                     value: `${fmt(hm?.answerRate ?? 0)}%`,
                     highlight: true,
                   },
+                  { label: "GNS VENT", value: fmt(hm?.avgWait ?? "00:00") },
                 ]}
               />
             </Card>
@@ -235,7 +237,6 @@ export default function App()
               />
               <QueueStatsRow
                 items={[
-                  { label: "KØ", value: fmt(sp?.queue ?? 0) },
                   { label: "MISTET", value: fmt(sp?.lost ?? 0) },
                   { label: "BESVARET", value: fmt(sp?.answered ?? 0) },
                   {
@@ -243,6 +244,7 @@ export default function App()
                     value: `${fmt(sp?.answerRate ?? 0)}%`,
                     highlight: true,
                   },
+                  { label: "GNS VENT", value: fmt(sp?.avgWait ?? "00:00") },
                 ]}
               />
             </Card>
