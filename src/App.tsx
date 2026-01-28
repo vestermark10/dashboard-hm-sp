@@ -291,8 +291,8 @@ export default function App()
 
 function BrandHeader({ name }: { name: string }) {
   const logoSrc = name === "HallMonitor"
-    ? "/Logo-HallMonitor.png"
-    : "/SwitchPay-logo_250px.png";
+    ? `${import.meta.env.BASE_URL}Logo-HallMonitor.png`
+    : `${import.meta.env.BASE_URL}SwitchPay-logo_250px.png`;
 
   return (
     <div className="flex items-center">
