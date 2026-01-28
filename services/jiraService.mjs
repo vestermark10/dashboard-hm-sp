@@ -5,7 +5,7 @@ import axios from 'axios';
  * Dokumentation: https://developer.atlassian.com/cloud/jira/platform/rest/v3/
  *
  * Håndterer to separate Jira instances:
- * - HallMonitor: https://hallmonitor.atlassian.net
+ * - HallMonitor: https://vestpol.atlassian.net (VestPol Business)
  * - SwitchPay: https://switchpaydev.atlassian.net
  */
 

@@ -5,7 +5,7 @@ import oneConnectScraper from './oneConnectScraper.mjs';
  * Telefonsystem API Service - Uni-tel One-Connect
  *
  * Bruger web scraping af One-Connect dashboard.
- * Data opdateres automatisk kl 09:00, 10:00, 11:00, 13:00, 14:00 og 15:30.
+ * Data opdateres automatisk hver 30. minut fra kl 08:00 til 16:00.
  *
  * Fallback til CSV import hvis scraping fejler.
  * CSV fil placering: data/telephony/*.csv
@@ -22,14 +22,25 @@ class TelephonyService {
       lastFetch: null
     };
 
-    // Opdateringstider: 09:00, 10:00, 11:00, 13:00, 14:00, 15:30
+    // Opdateringstider: hver 30. minut fra 08:00 til 16:00
     this.updateTimes = [
+      { hour: 8, minute: 0 },
+      { hour: 8, minute: 30 },
       { hour: 9, minute: 0 },
+      { hour: 9, minute: 30 },
       { hour: 10, minute: 0 },
+      { hour: 10, minute: 30 },
       { hour: 11, minute: 0 },
+      { hour: 11, minute: 30 },
+      { hour: 12, minute: 0 },
+      { hour: 12, minute: 30 },
       { hour: 13, minute: 0 },
+      { hour: 13, minute: 30 },
       { hour: 14, minute: 0 },
-      { hour: 15, minute: 30 }
+      { hour: 14, minute: 30 },
+      { hour: 15, minute: 0 },
+      { hour: 15, minute: 30 },
+      { hour: 16, minute: 0 }
     ];
 
     // Mockdata hvis CSV ikke er tilgængelig
@@ -57,7 +68,7 @@ class TelephonyService {
 
   /**
    * Tjekker om vi skal hente frisk data
-   * Data hentes kl 09:00, 10:00, 11:00, 13:00, 14:00 og 15:30
+   * Data hentes hver 30. minut fra kl 08:00 til 16:00
    */
   shouldFetchFreshData() {
     if (!this.cache.lastFetch) {

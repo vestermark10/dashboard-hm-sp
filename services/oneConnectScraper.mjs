@@ -33,7 +33,7 @@ class OneConnectScraper {
         console.log('OneConnect: Starter browser...');
 
         this.browser = await puppeteer.launch({
-            executablePath: '/usr/bin/chromium',
+            //executablePath: '/usr/bin/chromium',
             headless: 'new',
             args: [
                 '--no-sandbox',
@@ -188,6 +188,30 @@ class OneConnectScraper {
 
             console.log('OneConnect: Scraper kø data...');
 
+            // Først klik på "Svarprocent" tabs for at afsløre GNS VENT data
+            console.log('OneConnect: Klikker på Svarprocent tabs for at afsløre GNS VENT...');
+            try {
+                await this.page.evaluate(() => {
+                    const widgets = document.querySelectorAll('.widget-queue');
+                    widgets.forEach(widget => {
+                        const tabs = widget.querySelectorAll('.q-tab');
+                        tabs.forEach(tab => {
+                            const titleEl = tab.querySelector('.title');
+                            if (titleEl) {
+                                const title = titleEl.textContent.trim().toUpperCase();
+                                if (title === 'SVARPROCENT' || title === 'ANSWER RATE') {
+                                    tab.click();
+                                }
+                            }
+                        });
+                    });
+                });
+                // Vent på at tab content opdateres
+                await new Promise(resolve => setTimeout(resolve, 1500));
+            } catch (err) {
+                console.log('OneConnect: Kunne ikke klikke på Svarprocent tabs:', err.message);
+            }
+
             // Scrape data fra alle kø-bokse
             const queueData = await this.page.evaluate(() => {
                 const queues = {};
@@ -228,8 +252,38 @@ class OneConnectScraper {
                                 stats.answered = parseInt(value) || 0;
                             } else if (title === 'SVARPROCENT' || title === 'ANSWER RATE') {
                                 stats.answerRate = parseInt(value.replace('%', '')) || 0;
+                            } else if (title === 'GNS. VENT' || title === 'GNS VENT' || title === 'AVG WAIT' || title === 'AVG. WAIT') {
+                                stats.avgWait = value || "00:00";
+                            } else if (title === 'MAX VENT' || title === 'MAX WAIT' || title === 'LÆNGSTE VENT') {
+                                stats.maxWaitToday = value || "00:00";
                             }
                         });
+
+                        // Søg efter alle tidværdier (MM:SS format) i widget
+                        // De to første tidsværdier der ikke er 00:00 er typisk avgWait og maxWait
+                        const allText = widget.innerText;
+                        const timeMatches = allText.match(/\d{1,2}:\d{2}/g) || [];
+
+                        // Filtrer de tidsværdier vi allerede har fundet fra tabs
+                        const remainingTimes = timeMatches.filter(t => t !== '00:00' || timeMatches.every(m => m === '00:00'));
+
+                        // Tildel tidsværdier baseret på position
+                        // Første tid efter de 4 standard tabs (kø, mistet, besvaret, svarprocent) er typisk maxWait
+                        // Anden tid er typisk avgWait
+                        if (remainingTimes.length >= 2) {
+                            // Find unikke tider der ikke er queue/lost/answered/answerRate
+                            const nonStatTimes = remainingTimes.slice(-2); // Sidste to tidsværdier
+                            if (nonStatTimes.length >= 1 && !stats.maxWaitToday) {
+                                stats.maxWaitToday = nonStatTimes[0];
+                            }
+                            if (nonStatTimes.length >= 2 && !stats.avgWait) {
+                                stats.avgWait = nonStatTimes[1];
+                            }
+                        } else if (remainingTimes.length === 1) {
+                            if (!stats.avgWait) {
+                                stats.avgWait = remainingTimes[0];
+                            }
+                        }
 
                         // Ekstraher agent info fra "Tilmeldte (X/Y)" tekst
                         const topBarText = widget.querySelector('.top-bar .small-text');
@@ -280,6 +334,7 @@ class OneConnectScraper {
 
                 return queues;
             });
+
 
             console.log('OneConnect: Scraped data:', JSON.stringify(queueData, null, 2));
 
