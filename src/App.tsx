@@ -65,14 +65,65 @@ type EconomicResponse = {
   switchpay: EconomicData;
 };
 
+type VippsIncident = {
+  id: string;
+  title: string;
+  content: string;
+  updated: string;
+  status: string;
+};
+
+type PayterComponent = {
+  name: string;
+  status: string;
+  isOperational: boolean;
+};
+
+type StatusResponse = {
+  vippsMobilePay: {
+    status: string;
+    hasOutage: boolean;
+    incidents: VippsIncident[];
+  };
+  payter: {
+    status: string;
+    hasOutage: boolean;
+    components: {
+      myPayter?: PayterComponent;
+      cloudPaymentService?: PayterComponent;
+    };
+  };
+  hasOutage: boolean;
+  lastUpdated: string;
+};
+
 export default function App()
 {
   const [telephony, setTelephony] = useState<TelephonyResponse | null>(null);
   const [jiraSupport, setJiraSupport] = useState<JiraSupportResponse | null>(null);
   const [jiraOrders, setJiraOrders] = useState<JiraOrdersPipelineResponse | null>(null);
   const [economic, setEconomic] = useState<EconomicResponse | null>(null);
+  const [status, setStatus] = useState<StatusResponse | null>(null);
+  const [showOutagePopup, setShowOutagePopup] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [lastUpdate, setLastUpdate] = useState<string>("");
+  const formatTime = () => {
+    const now = new Date();
+    const h = String(now.getHours()).padStart(2, "0");
+    const m = String(now.getMinutes()).padStart(2, "0");
+    const s = String(now.getSeconds()).padStart(2, "0");
+    return `${h}:${m}:${s}`;
+  };
+
+  const [currentTime, setCurrentTime] = useState<string>(formatTime());
+
+  // Digitalt ur - opdateres hvert sekund
+  useEffect(() => {
+    const clockInterval = setInterval(() => {
+      setCurrentTime(formatTime());
+    }, 1000);
+    return () => clearInterval(clockInterval);
+  }, []);
 
   // Hent alle data fra backend
   useEffect(() => {
@@ -104,6 +155,33 @@ export default function App()
     return () => clearInterval(interval);
   }, []);
 
+  // Hent status data separat (oftere)
+  useEffect(() => {
+    const fetchStatus = async () => {
+      try {
+        const statusRes = await axios.get<StatusResponse>(`${API_BASE_URL}/api/status`);
+        const newStatus = statusRes.data;
+
+        // Vis popup hvis der er udfald og vi ikke allerede viser den
+        if (newStatus.hasOutage && !showOutagePopup) {
+          setShowOutagePopup(true);
+          // Skjul popup efter 5 minutter
+          setTimeout(() => setShowOutagePopup(false), 300000);
+        }
+
+        setStatus(newStatus);
+      } catch (err) {
+        console.error("Status API fejl:", err);
+      }
+    };
+
+    fetchStatus();
+
+    // Tjek status hvert 30. sekund
+    const statusInterval = setInterval(fetchStatus, 30000);
+    return () => clearInterval(statusInterval);
+  }, [showOutagePopup]);
+
   const hm = telephony?.hallmonitor;
   const sp = telephony?.switchpay;
 
@@ -125,6 +203,14 @@ export default function App()
     <div className="h-screen overflow-hidden bg-slate-950 text-slate-50">
       <div className="pointer-events-none fixed inset-0 bg-gradient-to-b from-slate-900/60 via-slate-950 to-black -z-10" />
 
+      {/* Outage Alert Popup */}
+      {showOutagePopup && status?.hasOutage && (
+        <OutagePopup
+          status={status}
+          onClose={() => setShowOutagePopup(false)}
+        />
+      )}
+
       <main className="h-full flex flex-col mx-auto max-w-[1920px] px-6 py-3">
         {/* Topbar */}
         <header className="flex items-center justify-between mb-3">
@@ -132,22 +218,14 @@ export default function App()
             <h1 className="text-3xl font-semibold tracking-tight">
               VestPol – Live Operations
             </h1>
-            <p className="mt-0.5 text-xs text-slate-400">
-              HallMonitor &amp; SwitchPay · Telefoni · Jira Support · Jira Orders ·
-              e-conomic
-            </p>
             {error && (
               <p className="mt-1 text-xs text-red-400">
                 {error} (viser fallback-tal indtil videre)
               </p>
             )}
           </div>
-          <div className="flex flex-col items-end text-xs text-slate-400">
-            <span>Periode: Sidste 24 timer</span>
-            <div className="flex items-center gap-2 mt-0.5">
-              <span className="inline-flex h-2 w-2 animate-pulse rounded-full bg-emerald-400" />
-              <span>Auto-refresh: 5 min.</span>
-            </div>
+          <div className="text-2xl font-bold text-slate-100 tracking-wider" style={{ fontFamily: "'JetBrains Mono', monospace" }}>
+            {currentTime}
           </div>
         </header>
 
@@ -156,6 +234,11 @@ export default function App()
           {/* ==================== HALLMONITOR ==================== */}
           <section className="space-y-3 flex flex-col min-h-0">
             <BrandHeader name="HallMonitor" />
+
+            {/* Placeholder for fremtidige status indicators */}
+            <div className="flex items-center justify-end gap-4 text-xs h-5">
+              {/* HallMonitor-specifikke statusindikatorer kommer her */}
+            </div>
 
             {/* Telefoni – ala One-Connect */}
             <Card>
@@ -219,6 +302,20 @@ export default function App()
           {/* ==================== SWITCHPAY ==================== */}
           <section className="space-y-3 flex flex-col min-h-0">
             <BrandHeader name="SwitchPay" />
+
+            {/* Status Indicators - SwitchPay specifikke */}
+            <div className="flex items-center justify-end gap-4 text-xs">
+              <StatusIndicator
+                label="VippsMobilePay"
+                isOperational={!status?.vippsMobilePay?.hasOutage}
+                isLoading={!status}
+              />
+              <StatusIndicator
+                label="Payter"
+                isOperational={!status?.payter?.hasOutage}
+                isLoading={!status}
+              />
+            </div>
 
             {/* Telefoni */}
             <Card>
@@ -297,7 +394,7 @@ function BrandHeader({ name }: { name: string }) {
     : `${import.meta.env.BASE_URL}SwitchPay-logo_250px.png`;
 
   return (
-    <div className="flex items-center">
+    <div className="flex items-center justify-center">
       <img
         src={logoSrc}
         alt={name}
@@ -683,6 +780,110 @@ function PipelineColumns({
             </div>
           );
         })}
+      </div>
+    </div>
+  );
+}
+
+/* --- Status Indicator --- */
+
+function StatusIndicator({
+  label,
+  isOperational,
+  isLoading,
+}: {
+  label: string;
+  isOperational: boolean;
+  isLoading: boolean;
+}) {
+  return (
+    <div className="flex items-center gap-2">
+      <span
+        className={`inline-flex h-3 w-3 rounded-full ${
+          isLoading
+            ? "bg-slate-500 animate-pulse"
+            : isOperational
+            ? "bg-emerald-500"
+            : "bg-red-500 animate-pulse"
+        }`}
+      />
+      <span className={`text-slate-300 ${!isOperational && !isLoading ? "text-red-400 font-medium" : ""}`}>
+        {label}
+      </span>
+    </div>
+  );
+}
+
+/* --- Outage Alert Popup --- */
+
+function OutagePopup({
+  status,
+  onClose,
+}: {
+  status: StatusResponse;
+  onClose: () => void;
+}) {
+  const vippsOutage = status.vippsMobilePay?.hasOutage;
+  const payterOutage = status.payter?.hasOutage;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+      <div
+        className="w-[33vw] h-[33vh] min-w-[400px] min-h-[300px] rounded-2xl border-2 border-red-500 bg-red-950/95 p-6 shadow-2xl shadow-red-900/50 overflow-auto flex flex-col"
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-3">
+            <span className="inline-flex h-4 w-4 animate-pulse rounded-full bg-red-500" />
+            <h2 className="text-2xl font-bold text-white">DRIFTSFORSTYRRELSE</h2>
+          </div>
+          <button
+            onClick={onClose}
+            className="text-white hover:text-white/70 transition-colors text-2xl leading-none"
+          >
+            &times;
+          </button>
+        </div>
+
+        {/* VippsMobilePay */}
+        {vippsOutage && (
+          <div className="mb-4 p-4 rounded-lg bg-red-900/50 border border-red-700">
+            <h3 className="text-lg font-semibold text-white mb-2">VippsMobilePay</h3>
+            {status.vippsMobilePay.incidents.map((incident) => (
+              <div key={incident.id} className="mb-2">
+                <p className="text-white font-medium">{incident.title}</p>
+                <p className="text-white text-sm mt-1">{incident.content}</p>
+                <p className="text-white/80 text-xs mt-1">
+                  Status: {incident.status} · Opdateret: {new Date(incident.updated).toLocaleString('da-DK')}
+                </p>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Payter */}
+        {payterOutage && (
+          <div className="mb-4 p-4 rounded-lg bg-red-900/50 border border-red-700">
+            <h3 className="text-lg font-semibold text-white mb-2">Payter</h3>
+            {status.payter.components.myPayter && !status.payter.components.myPayter.isOperational && (
+              <p className="text-white">
+                <span className="font-medium">MyPayter:</span>{" "}
+                <span className="capitalize">{status.payter.components.myPayter.status}</span>
+              </p>
+            )}
+            {status.payter.components.cloudPaymentService && !status.payter.components.cloudPaymentService.isOperational && (
+              <p className="text-white">
+                <span className="font-medium">Cloud Payment Service:</span>{" "}
+                <span className="capitalize">{status.payter.components.cloudPaymentService.status}</span>
+              </p>
+            )}
+          </div>
+        )}
+
+        {/* Footer */}
+        <div className="text-center text-xs text-white/80">
+          Popup lukkes automatisk efter 5 minutter
+        </div>
       </div>
     </div>
   );

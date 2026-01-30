@@ -4,6 +4,7 @@ import 'dotenv/config';
 import telephonyService from './services/telephonyService.mjs';
 import jiraService from './services/jiraService.mjs';
 import economicService from './services/economicService.mjs';
+import statusService from './services/statusService.mjs';
 
 const app = express();
 const PORT = 3001;
@@ -71,6 +72,20 @@ app.get("/api/economic/open-posts", async (req, res) => {
     console.error('API fejl - e-conomic:', error);
     res.status(500).json({
       error: 'Kunne ikke hente e-conomic data',
+      message: error.message
+    });
+  }
+});
+
+// Status – VippsMobilePay og Payter status
+app.get("/api/status", async (req, res) => {
+  try {
+    const data = await statusService.getStatus();
+    res.json(data);
+  } catch (error) {
+    console.error('API fejl - Status:', error);
+    res.status(500).json({
+      error: 'Kunne ikke hente status data',
       message: error.message
     });
   }
