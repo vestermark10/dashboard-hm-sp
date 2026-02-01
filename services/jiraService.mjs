@@ -679,6 +679,213 @@ class JiraService {
 
     return data;
   }
+
+  /**
+   * Henter SLA status for HallMonitor
+   * Returnerer trafiklysstatus for Enhed (48 timer) og Backend (24 timer)
+   */
+  async getSlaSummary() {
+    try {
+      const config = this.hmConfig;
+
+      // Check hvis credentials mangler
+      if (!config.baseUrl || !config.email || !config.apiToken) {
+        console.warn('HallMonitor SLA: Jira credentials mangler - bruger mockdata');
+        return this.getMockSlaSummary();
+      }
+
+      // Hent alle åbne sager med SLA felter
+      // Custom field IDs skal matches med jeres Jira setup
+      const [enhedResult, backendResult] = await Promise.all([
+        this.getSlaStatusForType(config, 'Enhed (48 timer)', 48),
+        this.getSlaStatusForType(config, 'Backend (24 timer)', 24)
+      ]);
+
+      return {
+        enhed: enhedResult,
+        backend: backendResult,
+        lastUpdated: new Date().toISOString()
+      };
+
+    } catch (error) {
+      console.error('Fejl ved hentning af SLA summary:', error.message);
+      return this.getMockSlaSummary();
+    }
+  }
+
+  /**
+   * Henter SLA status for en specifik SLA type
+   * @param {Object} config - Jira config
+   * @param {string} slaType - SLA Type værdi (f.eks. "Enhed (48 timer)")
+   * @param {number} slaHours - SLA timer (f.eks. 48)
+   */
+  async getSlaStatusForType(config, slaType, slaHours) {
+    try {
+      // JQL: Hent åbne sager med denne SLA type
+      // Bemærk: "SLA Type" og andre custom fields skal bruge deres felt-ID
+      // Du kan finde felt-ID'er via: GET /rest/api/3/field
+      const jql = `project = ${config.supportProjectKey} AND "SLA Type" = "${slaType}" AND status NOT IN ("Løst", "Annulleret")`;
+
+      console.log(`SLA Check - JQL: ${jql}`);
+
+      const response = await axios.post(
+        `${config.baseUrl}/rest/api/3/search/jql`,
+        {
+          jql,
+          fields: ['key', 'summary', 'status', 'customfield_*'], // Hent alle custom fields
+          maxResults: 100
+        },
+        {
+          headers: this.getAuthHeaders(config),
+          timeout: 15000
+        }
+      );
+
+      const issues = response.data.issues || [];
+      console.log(`SLA Check - ${slaType}: Fandt ${issues.length} åbne sager`);
+
+      if (issues.length === 0) {
+        return { status: 'green', count: 0, breached: 0, warning: 0, criticalIssues: [] };
+      }
+
+      // Analyser hver sag for SLA status
+      const now = new Date();
+      let breachedCount = 0;  // SLA overskredet
+      let warningCount = 0;   // Under 20% tid tilbage
+      let activeCount = 0;    // Aktive (ikke pausede) sager
+      const criticalIssues = []; // Liste over kritiske sager (gul/rød)
+
+      // 20% af SLA tid i millisekunder
+      const warningThresholdMs = slaHours * 0.2 * 60 * 60 * 1000;
+
+      for (const issue of issues) {
+        const fields = issue.fields;
+
+        // Find SLA Pauset felt (tjek om sagen er pauset)
+        // Custom field navne varierer - vi prøver forskellige muligheder
+        const slaPaused = this.findCustomFieldValue(fields, ['SLA Pauset', 'SLA Pause', 'Paused']);
+        const isPaused = slaPaused && (slaPaused === 'Pauset' || slaPaused === 'Pause' || slaPaused === true);
+
+        if (isPaused) {
+          console.log(`  ${issue.key}: Pauset - ignoreres`);
+          continue;
+        }
+
+        activeCount++;
+
+        // Find SLA Due (Business) felt
+        const slaDue = this.findCustomFieldValue(fields, ['SLA Due (Business)', 'SLA Due', 'Due Date']);
+
+        if (!slaDue) {
+          console.log(`  ${issue.key}: Ingen SLA Due fundet`);
+          continue;
+        }
+
+        const dueDate = new Date(slaDue);
+        const timeRemaining = dueDate.getTime() - now.getTime();
+
+        if (timeRemaining < 0) {
+          // SLA overskredet
+          breachedCount++;
+          criticalIssues.push({
+            key: issue.key,
+            status: 'breached',
+            timeRemainingMs: timeRemaining // Negativ værdi
+          });
+          console.log(`  ${issue.key}: OVERSKREDET (${Math.abs(Math.round(timeRemaining / (60 * 60 * 1000)))} timer over)`);
+        } else if (timeRemaining < warningThresholdMs) {
+          // Under 20% tid tilbage
+          warningCount++;
+          criticalIssues.push({
+            key: issue.key,
+            status: 'warning',
+            timeRemainingMs: timeRemaining
+          });
+          console.log(`  ${issue.key}: ADVARSEL (${Math.round(timeRemaining / (60 * 60 * 1000))} timer tilbage)`);
+        } else {
+          console.log(`  ${issue.key}: OK (${Math.round(timeRemaining / (60 * 60 * 1000))} timer tilbage)`);
+        }
+      }
+
+      // Sorter kritiske sager: rød før gul, derefter efter tid (mest kritisk først)
+      criticalIssues.sort((a, b) => {
+        // Først sorter efter status (breached før warning)
+        if (a.status === 'breached' && b.status === 'warning') return -1;
+        if (a.status === 'warning' && b.status === 'breached') return 1;
+        // Derefter sorter efter tid (laveste/mest negativ først)
+        return a.timeRemainingMs - b.timeRemainingMs;
+      });
+
+      // Bestem samlet status
+      let status;
+      if (breachedCount > 0) {
+        status = 'red';
+      } else if (warningCount > 0) {
+        status = 'yellow';
+      } else {
+        status = 'green';
+      }
+
+      console.log(`SLA Check - ${slaType}: Status=${status}, Aktive=${activeCount}, Overskredet=${breachedCount}, Advarsel=${warningCount}`);
+
+      return {
+        status,
+        count: activeCount,
+        breached: breachedCount,
+        warning: warningCount,
+        criticalIssues
+      };
+
+    } catch (error) {
+      console.error(`Fejl ved SLA check for ${slaType}:`, error.message);
+      if (error.response) {
+        console.error(`Response status: ${error.response.status}`);
+        console.error(`Response data:`, JSON.stringify(error.response.data, null, 2));
+      }
+      return { status: 'unknown', count: 0, breached: 0, warning: 0, criticalIssues: [], error: error.message };
+    }
+  }
+
+  /**
+   * Finder værdi for et custom field baseret på mulige navne
+   */
+  findCustomFieldValue(fields, possibleNames) {
+    // Først: Tjek om det er et kendt field navn
+    for (const name of possibleNames) {
+      if (fields[name] !== undefined) {
+        const val = fields[name];
+        // Hvis det er et objekt med 'value', returnér value
+        if (val && typeof val === 'object' && val.value) {
+          return val.value;
+        }
+        return val;
+      }
+    }
+
+    // Dernæst: Søg i alle customfield_XXXXX felter
+    for (const [key, value] of Object.entries(fields)) {
+      if (key.startsWith('customfield_') && value) {
+        // Tjek om dette felt matcher et af de søgte navne
+        // Custom fields kan have navnet i value.name eller som string value
+        if (typeof value === 'object') {
+          if (value.value) return value.value;
+          if (value.name && possibleNames.some(n => value.name.includes(n))) {
+            return value.value || value.name;
+          }
+        }
+      }
+    }
+
+    return null;
+  }
+
+  getMockSlaSummary() {
+    return {
+      enhed: { status: 'green', count: 5, breached: 0, warning: 0, criticalIssues: [] },
+      backend: { status: 'green', count: 3, breached: 0, warning: 0, criticalIssues: [] },
+      lastUpdated: new Date().toISOString()
+    };
+  }
 }
 
 export default new JiraService();

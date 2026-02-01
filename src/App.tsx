@@ -79,6 +79,14 @@ type PayterComponent = {
   isOperational: boolean;
 };
 
+type ElavonIncident = {
+  id: string;
+  title: string;
+  content: string;
+  updated: string;
+  status: string;
+};
+
 type StatusResponse = {
   vippsMobilePay: {
     status: string;
@@ -93,7 +101,33 @@ type StatusResponse = {
       cloudPaymentService?: PayterComponent;
     };
   };
+  elavon: {
+    status: string;
+    hasOutage: boolean;
+    incidents: ElavonIncident[];
+  };
   hasOutage: boolean;
+  lastUpdated: string;
+};
+
+type CriticalIssue = {
+  key: string;
+  status: 'breached' | 'warning';
+  timeRemainingMs: number;
+};
+
+type SlaStatus = {
+  status: 'green' | 'yellow' | 'red' | 'unknown';
+  count: number;
+  breached: number;
+  warning: number;
+  criticalIssues: CriticalIssue[];
+  error?: string;
+};
+
+type SlaResponse = {
+  enhed: SlaStatus;
+  backend: SlaStatus;
   lastUpdated: string;
 };
 
@@ -104,7 +138,21 @@ export default function App()
   const [jiraOrders, setJiraOrders] = useState<JiraOrdersPipelineResponse | null>(null);
   const [economic, setEconomic] = useState<EconomicResponse | null>(null);
   const [status, setStatus] = useState<StatusResponse | null>(null);
+  const [sla, setSla] = useState<SlaResponse | null>(null);
   const [showOutagePopup, setShowOutagePopup] = useState<boolean>(false);
+  const [dismissedOutageKey, setDismissedOutageKey] = useState<string | null>(() => {
+    // Hent fra localStorage ved opstart
+    const stored = localStorage.getItem('dismissedOutageKey');
+    if (stored) {
+      const parsed = JSON.parse(stored);
+      // Tjek om den er udløbet (24 timer gammel)
+      if (parsed.timestamp && Date.now() - parsed.timestamp < 24 * 60 * 60 * 1000) {
+        return parsed.key;
+      }
+      localStorage.removeItem('dismissedOutageKey');
+    }
+    return null;
+  });
   const [error, setError] = useState<string | null>(null);
   const [lastUpdate, setLastUpdate] = useState<string>("");
   const formatTime = () => {
@@ -129,17 +177,19 @@ export default function App()
   useEffect(() => {
     const fetchAllData = async () => {
       try {
-        const [telephonyRes, jiraSupportRes, jiraOrdersRes, economicRes] = await Promise.all([
+        const [telephonyRes, jiraSupportRes, jiraOrdersRes, economicRes, slaRes] = await Promise.all([
           axios.get<TelephonyResponse>(`${API_BASE_URL}/api/telephony/support`),
           axios.get<JiraSupportResponse>(`${API_BASE_URL}/api/jira/support`),
           axios.get<JiraOrdersPipelineResponse>(`${API_BASE_URL}/api/jira/orders-pipeline`),
-          axios.get<EconomicResponse>(`${API_BASE_URL}/api/economic/open-posts`)
+          axios.get<EconomicResponse>(`${API_BASE_URL}/api/economic/open-posts`),
+          axios.get<SlaResponse>(`${API_BASE_URL}/api/jira/sla`)
         ]);
 
         setTelephony(telephonyRes.data);
         setJiraSupport(jiraSupportRes.data);
         setJiraOrders(jiraOrdersRes.data);
         setEconomic(economicRes.data);
+        setSla(slaRes.data);
         setLastUpdate(new Date().toLocaleTimeString("da-DK"));
         setError(null);
       } catch (err) {
@@ -162,11 +212,60 @@ export default function App()
         const statusRes = await axios.get<StatusResponse>(`${API_BASE_URL}/api/status`);
         const newStatus = statusRes.data;
 
-        // Vis popup hvis der er udfald og vi ikke allerede viser den
-        if (newStatus.hasOutage && !showOutagePopup) {
+        // Generer en unik nøgle for den aktuelle outage baseret på incidents
+        const generateOutageKey = (s: StatusResponse): string | null => {
+          if (!s.hasOutage) return null;
+          const keys: string[] = [];
+          if (s.vippsMobilePay?.incidents) {
+            keys.push(...s.vippsMobilePay.incidents.map(i => i.id));
+          }
+          if (s.elavon?.incidents) {
+            keys.push(...s.elavon.incidents.map(i => i.id));
+          }
+          if (s.payter?.hasOutage) {
+            keys.push('payter-outage');
+          }
+          return keys.length > 0 ? keys.sort().join('|') : 'unknown-outage';
+        };
+
+        const currentOutageKey = generateOutageKey(newStatus);
+
+        // Læs dismissed key DIREKTE fra localStorage for at undgå React state timing issues
+        let storedDismissedKey: string | null = null;
+        const stored = localStorage.getItem('dismissedOutageKey');
+        if (stored) {
+          try {
+            const parsed = JSON.parse(stored);
+            if (parsed.timestamp && Date.now() - parsed.timestamp < 24 * 60 * 60 * 1000) {
+              storedDismissedKey = parsed.key;
+            }
+          } catch {
+            // Ignore parse errors
+          }
+        }
+
+        // Vis popup kun hvis:
+        // 1. Der er en outage
+        // 2. Det er en NY outage (forskellig fra den vi allerede har vist/dismissed)
+        // 3. Vi ikke allerede viser popup
+        if (newStatus.hasOutage && currentOutageKey && currentOutageKey !== storedDismissedKey && !showOutagePopup) {
           setShowOutagePopup(true);
-          // Skjul popup efter 5 minutter
-          setTimeout(() => setShowOutagePopup(false), 300000);
+          // Skjul popup efter 5 minutter og marker som dismissed
+          setTimeout(() => {
+            setShowOutagePopup(false);
+            // Gem i localStorage FØRST (synkront)
+            localStorage.setItem('dismissedOutageKey', JSON.stringify({
+              key: currentOutageKey,
+              timestamp: Date.now()
+            }));
+            setDismissedOutageKey(currentOutageKey);
+          }, 300000);
+        }
+
+        // Hvis outage er overstået, nulstil dismissed key så næste outage vises
+        if (!newStatus.hasOutage && storedDismissedKey) {
+          localStorage.removeItem('dismissedOutageKey');
+          setDismissedOutageKey(null);
         }
 
         setStatus(newStatus);
@@ -180,7 +279,7 @@ export default function App()
     // Tjek status hvert 30. sekund
     const statusInterval = setInterval(fetchStatus, 30000);
     return () => clearInterval(statusInterval);
-  }, [showOutagePopup]);
+  }, [showOutagePopup]); // Kun showOutagePopup - vi læser localStorage direkte
 
   const hm = telephony?.hallmonitor;
   const sp = telephony?.switchpay;
@@ -207,7 +306,30 @@ export default function App()
       {showOutagePopup && status?.hasOutage && (
         <OutagePopup
           status={status}
-          onClose={() => setShowOutagePopup(false)}
+          onClose={() => {
+            // Beregn outage key
+            const keys: string[] = [];
+            if (status.vippsMobilePay?.incidents) {
+              keys.push(...status.vippsMobilePay.incidents.map(i => i.id));
+            }
+            if (status.elavon?.incidents) {
+              keys.push(...status.elavon.incidents.map(i => i.id));
+            }
+            if (status.payter?.hasOutage) {
+              keys.push('payter-outage');
+            }
+            const outageKey = keys.length > 0 ? keys.sort().join('|') : 'unknown-outage';
+
+            // GEM I LOCALSTORAGE FØRST (synkront, før React state updates)
+            localStorage.setItem('dismissedOutageKey', JSON.stringify({
+              key: outageKey,
+              timestamp: Date.now()
+            }));
+
+            // Derefter opdater React state
+            setDismissedOutageKey(outageKey);
+            setShowOutagePopup(false);
+          }}
         />
       )}
 
@@ -235,9 +357,24 @@ export default function App()
           <section className="space-y-3 flex flex-col min-h-0">
             <BrandHeader name="HallMonitor" />
 
-            {/* Placeholder for fremtidige status indicators */}
-            <div className="flex items-center justify-end gap-4 text-xs h-5">
-              {/* HallMonitor-specifikke statusindikatorer kommer her */}
+            {/* SLA Status Indicators */}
+            <div className="flex items-center justify-between text-xs">
+              <div className="flex items-center gap-4">
+                <SlaIndicator
+                  label="Enhed (48 T)"
+                  status={sla?.enhed?.status ?? 'unknown'}
+                  isLoading={!sla}
+                />
+                <SlaIndicator
+                  label="Backend (24 T)"
+                  status={sla?.backend?.status ?? 'unknown'}
+                  isLoading={!sla}
+                />
+              </div>
+              <CriticalIssuesList
+                enhedIssues={sla?.enhed?.criticalIssues ?? []}
+                backendIssues={sla?.backend?.criticalIssues ?? []}
+              />
             </div>
 
             {/* Telefoni – ala One-Connect */}
@@ -313,6 +450,11 @@ export default function App()
               <StatusIndicator
                 label="Payter"
                 isOperational={!status?.payter?.hasOutage}
+                isLoading={!status}
+              />
+              <StatusIndicator
+                label="Elavon"
+                isOperational={!status?.elavon?.hasOutage}
                 isLoading={!status}
               />
             </div>
@@ -814,6 +956,109 @@ function StatusIndicator({
   );
 }
 
+/* --- SLA Indicator (trafiklysstatus) --- */
+
+function SlaIndicator({
+  label,
+  status,
+  isLoading,
+}: {
+  label: string;
+  status: 'green' | 'yellow' | 'red' | 'unknown';
+  isLoading: boolean;
+}) {
+  const getStatusColor = () => {
+    if (isLoading) return "bg-slate-500 animate-pulse";
+    switch (status) {
+      case 'green':
+        return "bg-emerald-500";
+      case 'yellow':
+        return "bg-amber-400 animate-pulse";
+      case 'red':
+        return "bg-red-500 animate-pulse";
+      default:
+        return "bg-slate-500";
+    }
+  };
+
+  const getTextColor = () => {
+    if (isLoading) return "text-slate-300";
+    switch (status) {
+      case 'green':
+        return "text-slate-300";
+      case 'yellow':
+        return "text-amber-400 font-medium";
+      case 'red':
+        return "text-red-400 font-medium";
+      default:
+        return "text-slate-400";
+    }
+  };
+
+  return (
+    <div className="flex items-center gap-2">
+      <span className={`inline-flex h-3 w-3 rounded-full ${getStatusColor()}`} />
+      <span className={getTextColor()}>{label}</span>
+    </div>
+  );
+}
+
+/* --- Critical Issues List --- */
+
+function CriticalIssuesList({
+  enhedIssues,
+  backendIssues,
+}: {
+  enhedIssues: CriticalIssue[];
+  backendIssues: CriticalIssue[];
+}) {
+  // Kombiner alle kritiske sager
+  const allIssues = [...enhedIssues, ...backendIssues];
+
+  // Sorter: breached først, derefter efter tid (mest kritisk først)
+  allIssues.sort((a, b) => {
+    if (a.status === 'breached' && b.status === 'warning') return -1;
+    if (a.status === 'warning' && b.status === 'breached') return 1;
+    return a.timeRemainingMs - b.timeRemainingMs;
+  });
+
+  if (allIssues.length === 0) {
+    return null;
+  }
+
+  const formatTimeRemaining = (ms: number): string => {
+    if (ms < 0) {
+      return 'OVERSKREDET';
+    }
+    const hours = Math.floor(ms / (1000 * 60 * 60));
+    const minutes = Math.floor((ms % (1000 * 60 * 60)) / (1000 * 60));
+
+    if (hours >= 1) {
+      return `${hours}t`;
+    }
+    return `${minutes}m`;
+  };
+
+  return (
+    <div className="flex items-center gap-1">
+      {allIssues.map((issue, index) => (
+        <span key={issue.key}>
+          {index > 0 && <span className="text-slate-500 mx-1">·</span>}
+          <span
+            className={
+              issue.status === 'breached'
+                ? 'text-red-500 font-medium'
+                : 'text-amber-500 font-medium'
+            }
+          >
+            {issue.key}: {formatTimeRemaining(issue.timeRemainingMs)}
+          </span>
+        </span>
+      ))}
+    </div>
+  );
+}
+
 /* --- Outage Alert Popup --- */
 
 function OutagePopup({
@@ -825,6 +1070,7 @@ function OutagePopup({
 }) {
   const vippsOutage = status.vippsMobilePay?.hasOutage;
   const payterOutage = status.payter?.hasOutage;
+  const elavonOutage = status.elavon?.hasOutage;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
@@ -877,6 +1123,22 @@ function OutagePopup({
                 <span className="capitalize">{status.payter.components.cloudPaymentService.status}</span>
               </p>
             )}
+          </div>
+        )}
+
+        {/* Elavon */}
+        {elavonOutage && (
+          <div className="mb-4 p-4 rounded-lg bg-red-900/50 border border-red-700">
+            <h3 className="text-lg font-semibold text-white mb-2">Elavon</h3>
+            {status.elavon.incidents.map((incident) => (
+              <div key={incident.id} className="mb-2">
+                <p className="text-white font-medium">{incident.title}</p>
+                <p className="text-white text-sm mt-1">{incident.content}</p>
+                <p className="text-white/80 text-xs mt-1">
+                  Status: {incident.status} · Opdateret: {new Date(incident.updated).toLocaleString('da-DK')}
+                </p>
+              </div>
+            ))}
           </div>
         )}
 
