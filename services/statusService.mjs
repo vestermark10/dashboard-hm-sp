@@ -2,16 +2,18 @@ import axios from 'axios';
 import { parseStringPromise } from 'xml2js';
 
 /**
- * Status Service - Overvåger VippsMobilePay og Payter status
+ * Status Service - Overvåger VippsMobilePay, Payter og Elavon status
  *
  * VippsMobilePay: Atom feed for incidents
  * Payter: JSON API for component status (MyPayter + Cloud Payment Service)
+ * Elavon: Atom feed for incidents (indløserbank for SwitchPay)
  */
 
 class StatusService {
   constructor() {
     this.vippsAtomUrl = 'https://status.vippsmobilepay.com/history.atom';
     this.payterJsonUrl = 'https://status.payter.com/index.json';
+    this.elavonAtomUrl = 'https://status.elavon.com/state_feed/feed.atom';
 
     // SIMULERING: Sæt til true for at teste outage popup
     this.simulateOutage = false;
@@ -69,15 +71,17 @@ class StatusService {
     }
 
     try {
-      const [vippsStatus, payterStatus] = await Promise.all([
+      const [vippsStatus, payterStatus, elavonStatus] = await Promise.all([
         this.getVippsStatus(),
-        this.getPayterStatus()
+        this.getPayterStatus(),
+        this.getElavonStatus()
       ]);
 
       const result = {
         vippsMobilePay: vippsStatus,
         payter: payterStatus,
-        hasOutage: vippsStatus.hasOutage || payterStatus.hasOutage,
+        elavon: elavonStatus,
+        hasOutage: vippsStatus.hasOutage || payterStatus.hasOutage || elavonStatus.hasOutage,
         lastUpdated: new Date().toISOString()
       };
 
@@ -98,6 +102,7 @@ class StatusService {
       return {
         vippsMobilePay: { status: 'operational', hasOutage: false, incidents: [] },
         payter: { status: 'operational', hasOutage: false, components: {} },
+        elavon: { status: 'operational', hasOutage: false, incidents: [] },
         hasOutage: false,
         lastUpdated: new Date().toISOString()
       };
@@ -225,6 +230,71 @@ class StatusService {
     } catch (error) {
       console.error('Payter status fejl:', error.message);
       return { status: 'unknown', hasOutage: false, components: {}, error: error.message };
+    }
+  }
+
+  /**
+   * Henter Elavon status fra Atom feed
+   * Leder efter aktive/uløste incidents
+   */
+  async getElavonStatus() {
+    try {
+      const response = await axios.get(this.elavonAtomUrl, {
+        timeout: 10000,
+        headers: {
+          'Accept': 'application/atom+xml'
+        }
+      });
+
+      const parsed = await parseStringPromise(response.data);
+      const entries = parsed.feed?.entry || [];
+
+      // Find aktive incidents (ikke resolved/ended)
+      const activeIncidents = [];
+
+      for (const entry of entries.slice(0, 10)) { // Tjek de 10 seneste
+        const title = entry.title?.[0]?._ || entry.title?.[0] || '';
+        const content = entry.content?.[0]?._ || entry.content?.[0] || '';
+        const updated = entry.updated?.[0] || '';
+        const id = entry.id?.[0] || '';
+
+        // Tjek om incident er resolved/ended/pending
+        // "Pending" = planlagt vedligeholdelse der ikke påvirker servicen endnu
+        const titleLower = title.toLowerCase();
+        const contentLower = content.toLowerCase();
+        const isResolved = titleLower.includes('[resolved]') ||
+                          titleLower.includes('[ended]') ||
+                          contentLower.includes('resolved') ||
+                          contentLower.includes('this incident has been resolved');
+        const isPending = titleLower.includes('pending:') ||
+                          titleLower.includes('[pending]');
+
+        // Tjek om det er en aktiv incident (inden for de sidste 24 timer og ikke resolved)
+        const updatedDate = new Date(updated);
+        const hoursSinceUpdate = (Date.now() - updatedDate.getTime()) / (1000 * 60 * 60);
+
+        // Kun aktive incidents: ikke resolved, ikke pending, inden for 24 timer
+        if (!isResolved && !isPending && hoursSinceUpdate < 24) {
+          activeIncidents.push({
+            id,
+            title: this.stripHtml(title),
+            content: this.stripHtml(content).substring(0, 500),
+            updated,
+            status: this.extractStatus(content)
+          });
+        }
+      }
+
+      const hasOutage = activeIncidents.length > 0;
+
+      return {
+        status: hasOutage ? 'outage' : 'operational',
+        hasOutage,
+        incidents: activeIncidents
+      };
+    } catch (error) {
+      console.error('Elavon status fejl:', error.message);
+      return { status: 'unknown', hasOutage: false, incidents: [], error: error.message };
     }
   }
 

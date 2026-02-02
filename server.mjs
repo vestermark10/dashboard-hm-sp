@@ -91,6 +91,20 @@ app.get("/api/status", async (req, res) => {
   }
 });
 
+// Jira SLA – HallMonitor SLA trafiklysindikatorer
+app.get("/api/jira/sla", async (req, res) => {
+  try {
+    const data = await jiraService.getSlaSummary();
+    res.json(data);
+  } catch (error) {
+    console.error('API fejl - Jira SLA:', error);
+    res.status(500).json({
+      error: 'Kunne ikke hente SLA data',
+      message: error.message
+    });
+  }
+});
+
 app.listen(PORT, async () => {
   console.log(`Backend kører på http://localhost:${PORT}`);
 
