@@ -356,7 +356,6 @@ export default function App()
           {/* ==================== HALLMONITOR ==================== */}
           <section className="space-y-3 flex flex-col min-h-0">
             <BrandHeader name="HallMonitor" />
-
             {/* SLA Status Indicators */}
             <div className="flex items-center justify-between text-xs">
               <div className="flex items-center gap-4">
