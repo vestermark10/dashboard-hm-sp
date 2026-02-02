@@ -140,7 +140,7 @@ export default function App()
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [sla, setSla] = useState<SlaResponse | null>(null);
   const [showOutagePopup, setShowOutagePopup] = useState<boolean>(false);
-  const [dismissedOutageKey, setDismissedOutageKey] = useState<string | null>(() => {
+  const [, setDismissedOutageKey] = useState<string | null>(() => {
     // Hent fra localStorage ved opstart
     const stored = localStorage.getItem('dismissedOutageKey');
     if (stored) {
