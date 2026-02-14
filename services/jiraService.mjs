@@ -188,19 +188,6 @@ class JiraService {
 
       const closedToday = closedTodayKeys.size;
 
-      // DEBUG: Vis hvilke issues der blev lukket i dag
-      console.log(`${productName} - DEBUG JQL: ${closedTodayJql}`);
-      if (closedToday > 0 && closedToday < 20) {
-        const closedKeys = Array.from(closedTodayKeys).slice(0, 10).join(', ');
-        console.log(`${productName} - Closed today: ${closedToday} (${closedKeys}${closedToday > 10 ? '...' : ''})`);
-        // Vis første issue's resolutiondate
-        if (closedTodayResponse.data.issues.length > 0 && closedTodayResponse.data.issues[0].fields.resolutiondate) {
-          console.log(`${productName} - Første issue resolutiondate: ${closedTodayResponse.data.issues[0].fields.resolutiondate}`);
-        }
-      } else {
-        console.log(`${productName} - Closed today: ${closedToday}`);
-      }
-
       // Hent issues oprettet i dag for at tælle newToday (inkluderer både åbne og lukkede)
       // VIGTIGT: Jira JQL bruger UTC tid, men vi vil have CET tid (UTC+1)
       // Så vi skal query for "igår 23:00 UTC til i dag 23:00 UTC" for at få "i dag 00:00 CET til i morgen 00:00 CET"
@@ -233,28 +220,26 @@ class JiraService {
 
       const newToday = createdTodayKeys.size;
 
-      // DEBUG: Vis hvilke issues der blev oprettet i dag
-      console.log(`${productName} - DEBUG created today JQL: ${createdTodayJql}`);
-      if (newToday > 0 && newToday < 20) {
-        const createdKeys = Array.from(createdTodayKeys).slice(0, 10).join(', ');
-        console.log(`${productName} - New today: ${newToday} (${createdKeys}${newToday > 10 ? '...' : ''})`);
-        // Vis første issue's created date
-        if (createdTodayResponse.data.issues.length > 0 && createdTodayResponse.data.issues[0].fields.created) {
-          console.log(`${productName} - Første issue created: ${createdTodayResponse.data.issues[0].fields.created}`);
-        }
-      } else {
-        console.log(`${productName} - New today: ${newToday}`);
-      }
-
       // Beregn metrics
       const metrics = this.calculateMetrics(issues, totalOpenIssues, closedToday, newToday);
+
+      // Beregn nye metrics (i parallel for performance)
+      const [timeToFirstResponse, slaComplianceOrLifetime] = await Promise.all([
+        this.calculateTimeToFirstResponse(config),
+        productName === 'HallMonitor'
+          ? this.calculateSlaCompliance(config)
+          : this.calculateAverageLifetime(config)
+      ]);
 
       // Hent trend data med cache
       const trendData = await this.getCachedTrendData(productName, config);
 
       return {
         ...metrics,
-        trendData
+        trendData,
+        timeToFirstResponse: timeToFirstResponse || '–',
+        slaCompliance: productName === 'HallMonitor' ? slaComplianceOrLifetime : null,
+        averageLifetime: productName === 'SwitchPay' ? (slaComplianceOrLifetime || '–') : null
       };
 
     } catch (error) {
@@ -296,7 +281,513 @@ class JiraService {
   }
 
   /**
-   * Henter historiske data for trend chart (sidste 30 dage)
+   * Formaterer tid i millisekunder til menneskeligt læsbart format (f.eks. "2t 34m", "1d 6t")
+   */
+  formatDuration(milliseconds) {
+    const hours = Math.floor(milliseconds / (1000 * 60 * 60));
+    const minutes = Math.floor((milliseconds % (1000 * 60 * 60)) / (1000 * 60));
+    const days = Math.floor(hours / 6);  // 1 arbejdsdag = 6 timer (9-15)
+    const remainingHours = hours % 6;
+
+    if (days > 0) {
+      return remainingHours > 0 ? `${days}d ${remainingHours}t` : `${days}d`;
+    }
+    if (hours > 0) {
+      return minutes > 0 ? `${hours}t ${minutes}m` : `${hours}t`;
+    }
+    return `${minutes}m`;
+  }
+
+  /**
+   * Beregner arbejdstid mellem to datoer (kun hverdage 9-15)
+   * @param {Date} startDate - Start dato
+   * @param {Date} endDate - Slut dato
+   * @returns {number} - Arbejdstid i millisekunder
+   */
+  calculateBusinessHours(startDate, endDate) {
+    const WORK_START_HOUR = 9;  // 09:00
+    const WORK_END_HOUR = 15;   // 15:00
+
+    let current = new Date(startDate);
+    const end = new Date(endDate);
+    let businessMilliseconds = 0;
+
+    // Loop through each day
+    while (current < end) {
+      const dayOfWeek = current.getDay(); // 0 = søndag, 6 = lørdag
+
+      // Skip weekends
+      if (dayOfWeek !== 0 && dayOfWeek !== 6) {
+        // Define work hours for this day
+        const workStart = new Date(current);
+        workStart.setHours(WORK_START_HOUR, 0, 0, 0);
+
+        const workEnd = new Date(current);
+        workEnd.setHours(WORK_END_HOUR, 0, 0, 0);
+
+        // Calculate overlap between [current, end] and [workStart, workEnd]
+        const overlapStart = current > workStart ? current : workStart;
+        const overlapEnd = end < workEnd ? end : workEnd;
+
+        if (overlapStart < overlapEnd) {
+          businessMilliseconds += overlapEnd - overlapStart;
+        }
+      }
+
+      // Move to next day at midnight
+      current.setDate(current.getDate() + 1);
+      current.setHours(0, 0, 0, 0);
+
+      // If we've passed the end date, stop
+      if (current >= end) {
+        break;
+      }
+    }
+
+    return businessMilliseconds;
+  }
+
+  /**
+   * Beregner gennemsnitlig tid til første svar (ekskl. reporter kommentarer)
+   * Baseret på løste sager fra de sidste 30 dage
+   */
+  async calculateTimeToFirstResponse(config) {
+    try {
+      // Get resolved issues from last 30 days
+      const thirtyDaysAgo = new Date();
+      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+      const dateStr = thirtyDaysAgo.toISOString().split('T')[0];
+
+      const jql = `project = ${config.supportProjectKey} AND statusCategory = Done AND resolutiondate >= "${dateStr} 00:00"`;
+
+      const response = await axios.post(
+        `${config.baseUrl}/rest/api/3/search/jql`,
+        {
+          jql,
+          fields: ['key', 'created', 'reporter', 'resolutiondate'],
+          maxResults: 100
+        },
+        {
+          headers: this.getAuthHeaders(config),
+          timeout: 15000
+        }
+      );
+
+      let allIssues = [...response.data.issues];
+      let nextToken = response.data.nextPageToken;
+
+      // Pagination
+      while (nextToken) {
+        const pageResp = await axios.post(
+          `${config.baseUrl}/rest/api/3/search/jql`,
+          { jql, fields: ['key', 'created', 'reporter', 'resolutiondate'], maxResults: 100, nextPageToken: nextToken },
+          { headers: this.getAuthHeaders(config), timeout: 15000 }
+        );
+        allIssues.push(...pageResp.data.issues);
+        nextToken = pageResp.data.nextPageToken;
+      }
+
+      // Calculate first response time for each issue
+      const responseTimes = [];
+
+      for (const issue of allIssues.slice(0, 50)) { // Limit to 50 issues to avoid rate limits
+        try {
+          // Fetch comments for this issue
+          const commentsResp = await axios.get(
+            `${config.baseUrl}/rest/api/3/issue/${issue.key}/comment`,
+            {
+              headers: this.getAuthHeaders(config),
+              timeout: 10000
+            }
+          );
+
+          const comments = commentsResp.data.comments || [];
+          const reporterEmail = issue.fields.reporter?.emailAddress || issue.fields.reporter?.name;
+
+          // Find first non-reporter comment
+          const firstAgentComment = comments.find(
+            comment => comment.author?.emailAddress !== reporterEmail && comment.author?.name !== reporterEmail
+          );
+
+          const created = new Date(issue.fields.created);
+
+          if (firstAgentComment) {
+            // Use first agent comment time
+            const firstResponse = new Date(firstAgentComment.created);
+            const responseTime = this.calculateBusinessHours(created, firstResponse);
+
+            if (responseTime > 0) {
+              responseTimes.push(responseTime);
+            }
+          } else if (issue.fields.resolutiondate) {
+            // No comment - use resolution time as response
+            const resolved = new Date(issue.fields.resolutiondate);
+            const responseTime = this.calculateBusinessHours(created, resolved);
+
+            if (responseTime > 0) {
+              responseTimes.push(responseTime);
+            }
+          }
+        } catch (err) {
+          // Skip issues with comment fetch errors
+          console.error(`Error fetching comments for ${issue.key}:`, err.message);
+        }
+      }
+
+      if (responseTimes.length === 0) {
+        return null;
+      }
+
+      // Calculate average
+      const avgResponseTime = responseTimes.reduce((a, b) => a + b, 0) / responseTimes.length;
+      return this.formatDuration(avgResponseTime);
+
+    } catch (error) {
+      console.error('Error calculating time to first response:', error.message);
+      return null;
+    }
+  }
+
+  /**
+   * Beregner SLA compliance % for løste sager fra de sidste 30 dage
+   * Sammenligner resolutiondate med SLA Due (Business) field
+   */
+  async calculateSlaCompliance(config) {
+    try {
+      // Get resolved issues from last 30 days
+      const thirtyDaysAgo = new Date();
+      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+      const dateStr = thirtyDaysAgo.toISOString().split('T')[0];
+
+      const jql = `project = ${config.supportProjectKey} AND statusCategory = Done AND resolutiondate >= "${dateStr} 00:00"`;
+
+      const response = await axios.post(
+        `${config.baseUrl}/rest/api/3/search/jql`,
+        {
+          jql,
+          fields: ['key', 'resolutiondate', 'customfield_*'],
+          maxResults: 100
+        },
+        {
+          headers: this.getAuthHeaders(config),
+          timeout: 15000
+        }
+      );
+
+      let allIssues = [...response.data.issues];
+      let nextToken = response.data.nextPageToken;
+
+      // Pagination
+      while (nextToken) {
+        const pageResp = await axios.post(
+          `${config.baseUrl}/rest/api/3/search/jql`,
+          { jql, fields: ['key', 'resolutiondate', 'customfield_*'], maxResults: 100, nextPageToken: nextToken },
+          { headers: this.getAuthHeaders(config), timeout: 15000 }
+        );
+        allIssues.push(...pageResp.data.issues);
+        nextToken = pageResp.data.nextPageToken;
+      }
+
+      if (allIssues.length === 0) {
+        return null;
+      }
+
+      let withinSla = 0;
+      let totalWithSla = 0;
+
+      for (const issue of allIssues) {
+        // Find SLA Due field (reuse existing findCustomFieldValue pattern)
+        const slaDue = this.findCustomFieldValue(issue.fields, [
+          'SLA Due (Business)',
+          'SLA Due',
+          'Due Date'
+        ]);
+
+        if (slaDue && issue.fields.resolutiondate) {
+          totalWithSla++;
+          const dueDate = new Date(slaDue);
+          const resolvedDate = new Date(issue.fields.resolutiondate);
+
+          if (resolvedDate <= dueDate) {
+            withinSla++;
+          }
+        }
+      }
+
+      if (totalWithSla === 0) {
+        return null;
+      }
+
+      return Math.round((withinSla / totalWithSla) * 100);
+
+    } catch (error) {
+      console.error('Error calculating SLA compliance:', error.message);
+      return null;
+    }
+  }
+
+  /**
+   * Beregner gennemsnitlig levetid for løste sager fra de sidste 30 dage
+   * Fra created til resolutiondate
+   */
+  async calculateAverageLifetime(config) {
+    try {
+      // Get resolved issues from last 30 days
+      const thirtyDaysAgo = new Date();
+      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+      const dateStr = thirtyDaysAgo.toISOString().split('T')[0];
+
+      const jql = `project = ${config.supportProjectKey} AND statusCategory = Done AND resolutiondate >= "${dateStr} 00:00"`;
+
+      const response = await axios.post(
+        `${config.baseUrl}/rest/api/3/search/jql`,
+        {
+          jql,
+          fields: ['key', 'created', 'resolutiondate'],
+          maxResults: 100
+        },
+        {
+          headers: this.getAuthHeaders(config),
+          timeout: 15000
+        }
+      );
+
+      let allIssues = [...response.data.issues];
+      let nextToken = response.data.nextPageToken;
+
+      // Pagination
+      while (nextToken) {
+        const pageResp = await axios.post(
+          `${config.baseUrl}/rest/api/3/search/jql`,
+          { jql, fields: ['key', 'created', 'resolutiondate'], maxResults: 100, nextPageToken: nextToken },
+          { headers: this.getAuthHeaders(config), timeout: 15000 }
+        );
+        allIssues.push(...pageResp.data.issues);
+        nextToken = pageResp.data.nextPageToken;
+      }
+
+      if (allIssues.length === 0) {
+        return null;
+      }
+
+      const lifetimes = [];
+
+      for (const issue of allIssues) {
+        if (issue.fields.created && issue.fields.resolutiondate) {
+          const created = new Date(issue.fields.created);
+          const resolved = new Date(issue.fields.resolutiondate);
+          const lifetime = this.calculateBusinessHours(created, resolved);
+
+          if (lifetime > 0) {
+            lifetimes.push(lifetime);
+          }
+        }
+      }
+
+      if (lifetimes.length === 0) {
+        return null;
+      }
+
+      const avgLifetime = lifetimes.reduce((a, b) => a + b, 0) / lifetimes.length;
+      return this.formatDuration(avgLifetime);
+
+    } catch (error) {
+      console.error('Error calculating average lifetime:', error.message);
+      return null;
+    }
+  }
+
+  /**
+   * Henter issue count via pagination (da /search/approximate-count ikke findes)
+   */
+  async getCountWithPagination(config, jql) {
+    try {
+      const response = await axios.post(
+        `${config.baseUrl}/rest/api/3/search/jql`,
+        { jql, fields: ['key'], maxResults: 100 },
+        { headers: this.getAuthHeaders(config), timeout: 10000 }
+      );
+
+      const keys = new Set(response.data.issues.map(i => i.key).filter(Boolean));
+      let nextToken = response.data.nextPageToken;
+
+      while (nextToken) {
+        const pageResp = await axios.post(
+          `${config.baseUrl}/rest/api/3/search/jql`,
+          { jql, fields: ['key'], maxResults: 100, nextPageToken: nextToken },
+          { headers: this.getAuthHeaders(config), timeout: 10000 }
+        );
+        pageResp.data.issues.forEach(i => { if (i.key) keys.add(i.key); });
+        nextToken = pageResp.data.nextPageToken;
+      }
+
+      return keys.size;
+    } catch (error) {
+      console.error('Pagination count error:', error.message);
+      return 0;
+    }
+  }
+
+  /**
+   * Henter historiske data for trend chart (9 uger)
+   * - 8 hele uger (akkumuleret)
+   * - 1 indeværende uge (dag-for-dag)
+   */
+  async get8WeeksTrendData(config) {
+    try {
+      const today = new Date();
+      const weeks = [];
+      const currentWeek = [];
+
+      // Find mandag i denne uge (ISO uge starter mandag)
+      const currentMonday = new Date(today);
+      const dayOfWeek = currentMonday.getDay(); // 0 = søndag, 1 = mandag, ...
+      const daysToMonday = dayOfWeek === 0 ? -6 : 1 - dayOfWeek; // Hvis søndag, gå 6 dage tilbage
+      currentMonday.setDate(currentMonday.getDate() + daysToMonday);
+      currentMonday.setHours(0, 0, 0, 0);
+
+      // Hent data for indeværende uge (dag-for-dag)
+      for (let day = 0; day < 7; day++) {
+        const date = new Date(currentMonday);
+        date.setDate(date.getDate() + day);
+
+        // Stop hvis vi er i fremtiden
+        if (date > today) break;
+
+        const dateStr = date.toISOString().split('T')[0];
+        const nextDate = new Date(date);
+        nextDate.setDate(nextDate.getDate() + 1);
+        const nextDateStr = nextDate.toISOString().split('T')[0];
+
+        const createdJql = `project = ${config.supportProjectKey} AND created >= "${dateStr} 00:00" AND created < "${nextDateStr} 00:00"`;
+        const resolvedJql = `project = ${config.supportProjectKey} AND statusCategory = Done AND resolutiondate >= "${dateStr} 00:00" AND resolutiondate < "${nextDateStr} 00:00"`;
+
+        // Hent counts med pagination (da approximate-count ikke findes)
+        const createdCount = await this.getCountWithPagination(config, createdJql);
+        const resolvedCount = await this.getCountWithPagination(config, resolvedJql);
+
+        const dayNames = ['Søn', 'Man', 'Tir', 'Ons', 'Tor', 'Fre', 'Lør'];
+
+        currentWeek.push({
+          date: dateStr,
+          dayLabel: dayNames[date.getDay()],
+          created: createdCount,
+          resolved: resolvedCount,
+          open: 0 // Beregnes senere
+        });
+      }
+
+      // Hent data for de sidste 8 hele uger (før indeværende uge)
+      for (let weekOffset = 1; weekOffset <= 8; weekOffset++) {
+        const weekStart = new Date(currentMonday);
+        weekStart.setDate(weekStart.getDate() - (weekOffset * 7));
+
+        const weekEnd = new Date(weekStart);
+        weekEnd.setDate(weekEnd.getDate() + 7);
+
+        const weekStartStr = weekStart.toISOString().split('T')[0];
+        const weekEndStr = weekEnd.toISOString().split('T')[0];
+
+        const createdJql = `project = ${config.supportProjectKey} AND created >= "${weekStartStr} 00:00" AND created < "${weekEndStr} 00:00"`;
+        const resolvedJql = `project = ${config.supportProjectKey} AND statusCategory = Done AND resolutiondate >= "${weekStartStr} 00:00" AND resolutiondate < "${weekEndStr} 00:00"`;
+
+        // Hent counts med pagination
+        const createdCount = await this.getCountWithPagination(config, createdJql);
+        const resolvedCount = await this.getCountWithPagination(config, resolvedJql);
+
+        // Beregn uge nummer
+        const weekNumber = this.getISOWeekNumber(weekStart);
+
+        weeks.unshift({ // unshift for at vende rækkefølgen (ældste først)
+          weekLabel: `Uge ${weekNumber}`,
+          weekStart: weekStartStr,
+          created: createdCount,
+          resolved: resolvedCount,
+          open: 0 // Beregnes senere
+        });
+      }
+
+      // Beregn åbne sager som løbende balance
+      // Start med nuværende antal åbne sager (lige nu)
+      const currentOpenJql = `project = ${config.supportProjectKey} AND statusCategory != Done`;
+      let runningOpen = await this.getCountWithPagination(config, currentOpenJql);
+
+      // Sæt dagens nuværende tal (seneste dag)
+      if (currentWeek.length > 0) {
+        currentWeek[currentWeek.length - 1].open = runningOpen;
+      }
+
+      // Gå baglæns gennem dagene og beregn åbne sager
+      for (let i = currentWeek.length - 1; i > 0; i--) {
+        runningOpen = runningOpen - currentWeek[i].created + currentWeek[i].resolved;
+        currentWeek[i - 1].open = runningOpen;
+      }
+
+      // Fortsæt baglæns gennem ugerne fra sidste dags start
+      for (let i = weeks.length - 1; i >= 0; i--) {
+        runningOpen = runningOpen - weeks[i].created + weeks[i].resolved;
+        weeks[i].open = runningOpen;
+      }
+
+      return { weeks, currentWeek };
+
+    } catch (error) {
+      console.error('Fejl ved hentning af 8-ugers trend data:', error.message);
+      if (error.response) {
+        console.error('Response status:', error.response.status);
+        console.error('Response data:', JSON.stringify(error.response.data));
+      }
+      return this.getMock8WeeksTrendData();
+    }
+  }
+
+  /**
+   * Beregner ISO uge nummer
+   */
+  getISOWeekNumber(date) {
+    const d = new Date(date);
+    d.setHours(0, 0, 0, 0);
+    d.setDate(d.getDate() + 4 - (d.getDay() || 7));
+    const yearStart = new Date(d.getFullYear(), 0, 1);
+    const weekNo = Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
+    return weekNo;
+  }
+
+  /**
+   * Mock data for 8 ugers trend
+   */
+  getMock8WeeksTrendData() {
+    const weeks = [];
+    const currentWeek = [];
+
+    // 8 uger (mock) - uge 51, 52 (2025) + uge 1-6 (2026)
+    const weekNumbers = [51, 52, 1, 2, 3, 4, 5, 6];
+    for (let i = 0; i < 8; i++) {
+      weeks.push({
+        weekLabel: `Uge ${weekNumbers[i]}`,
+        created: Math.floor(Math.random() * 50) + 20,
+        resolved: Math.floor(Math.random() * 45) + 18,
+        open: Math.floor(Math.random() * 30) + 100
+      });
+    }
+
+    // Indeværende uge (mock)
+    const dayNames = ['Man', 'Tir', 'Ons', 'Tor', 'Fre', 'Lør', 'Søn'];
+    for (let i = 0; i < 5; i++) { // Kun 5 dage (man-fre)
+      currentWeek.push({
+        dayLabel: dayNames[i],
+        created: Math.floor(Math.random() * 10) + 3,
+        resolved: Math.floor(Math.random() * 8) + 2,
+        open: Math.floor(Math.random() * 5) + 110
+      });
+    }
+
+    return { weeks, currentWeek };
+  }
+
+  /**
+   * GAMMEL METODE - Henter historiske data for trend chart (sidste 30 dage)
+   * DEPRECATED - bruges ikke længere
    */
   async get30DaysTrendData(config) {
     try {
@@ -440,13 +931,11 @@ class JiraService {
 
     // Tjek om cache er valid (opdateret i dag)
     if (this.trendCache.lastUpdated === today && this.trendCache.data[cacheKey]) {
-      console.log(`${productName} - Bruger cached trend data fra ${today}`);
       return this.trendCache.data[cacheKey];
     }
 
     // Cache er forældet eller ikke-eksisterende - hent ny data
-    console.log(`${productName} - Henter ny trend data (kan tage ~30 sekunder)...`);
-    const trendData = await this.get30DaysTrendData(config);
+    const trendData = await this.get8WeeksTrendData(config);
 
     // Gem i cache
     this.trendCache.data[cacheKey] = trendData;
@@ -506,7 +995,6 @@ class JiraService {
 
       // Hent ALLE issues én gang og filtrer derefter i JavaScript
       // Dette undgår rate limiting ved at reducere antal API kald
-      console.log(`${productName} - Henter alle issues fra projekt ${config.ordersProjectKey}...`);
       const allIssuesJql = `project = ${config.ordersProjectKey}`;
 
       const response = await axios.post(
@@ -544,8 +1032,6 @@ class JiraService {
         nextPageToken = pageResponse.data.nextPageToken;
       }
 
-      console.log(`${productName} - Hentet ${allIssues.length} issues total. Filtrer nu for hver status...`);
-
       // Beregn datoen for 7 dage siden
       const sevenDaysAgo = new Date();
       sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
@@ -566,8 +1052,6 @@ class JiraService {
         }
 
         const count = new Set(matchingIssues.map(i => i.key).filter(Boolean)).size;
-
-        console.log(`${productName} - Status "${stage}": ${count}${stage === 'Færdig' ? ' (sidste 7 dage)' : ''}`);
 
         stageCounts.push({
           label: stage,
@@ -617,7 +1101,11 @@ class JiraService {
         { key: "SUP-960", title: "Settlement delayed", status: "Waiting", age: "12t" },
         { key: "SUP-951", title: "Config request", status: "To Do", age: "1d" }
       ],
-      trendData: this.generateMockTrendData(isMockHallmonitor)
+      trendData: this.generateMockTrendData(isMockHallmonitor),
+      timeToFirstResponse: isMockHallmonitor ? '2t 15m' : '1t 45m',
+      ...(isMockHallmonitor
+        ? { slaCompliance: 94 }
+        : { averageLifetime: '1d 3t' })
     };
   }
 
@@ -652,32 +1140,8 @@ class JiraService {
   }
 
   generateMockTrendData(isHallMonitor) {
-    const data = [];
-    const today = new Date();
-    let cumulativeOpen = isHallMonitor ? 15 : 40; // Start værdi
-
-    for (let i = 29; i >= 0; i--) {
-      const date = new Date(today);
-      date.setDate(date.getDate() - i);
-
-      const baseCreated = isHallMonitor ? 8 : 5;
-      const baseResolved = isHallMonitor ? 7 : 4;
-
-      const created = baseCreated + Math.floor(Math.random() * 6) - 2;
-      const resolved = baseResolved + Math.floor(Math.random() * 6) - 2;
-
-      cumulativeOpen = cumulativeOpen + Math.max(0, created) - Math.max(0, resolved);
-      cumulativeOpen = Math.max(0, cumulativeOpen); // Kan ikke være negativ
-
-      data.push({
-        date: date.toISOString().split('T')[0],
-        created: Math.max(0, created),
-        resolved: Math.max(0, resolved),
-        open: cumulativeOpen
-      });
-    }
-
-    return data;
+    // DEPRECATED - brug getMock8WeeksTrendData() i stedet
+    return this.getMock8WeeksTrendData();
   }
 
   /**
@@ -726,8 +1190,6 @@ class JiraService {
       // Du kan finde felt-ID'er via: GET /rest/api/3/field
       const jql = `project = ${config.supportProjectKey} AND "SLA Type" = "${slaType}" AND status NOT IN ("Løst", "Annulleret")`;
 
-      console.log(`SLA Check - JQL: ${jql}`);
-
       const response = await axios.post(
         `${config.baseUrl}/rest/api/3/search/jql`,
         {
@@ -742,7 +1204,6 @@ class JiraService {
       );
 
       const issues = response.data.issues || [];
-      console.log(`SLA Check - ${slaType}: Fandt ${issues.length} åbne sager`);
 
       if (issues.length === 0) {
         return { status: 'green', count: 0, breached: 0, warning: 0, criticalIssues: [] };
@@ -767,7 +1228,6 @@ class JiraService {
         const isPaused = slaPaused && (slaPaused === 'Pauset' || slaPaused === 'Pause' || slaPaused === true);
 
         if (isPaused) {
-          console.log(`  ${issue.key}: Pauset - ignoreres`);
           continue;
         }
 
@@ -777,7 +1237,6 @@ class JiraService {
         const slaDue = this.findCustomFieldValue(fields, ['SLA Due (Business)', 'SLA Due', 'Due Date']);
 
         if (!slaDue) {
-          console.log(`  ${issue.key}: Ingen SLA Due fundet`);
           continue;
         }
 
@@ -792,7 +1251,6 @@ class JiraService {
             status: 'breached',
             timeRemainingMs: timeRemaining // Negativ værdi
           });
-          console.log(`  ${issue.key}: OVERSKREDET (${Math.abs(Math.round(timeRemaining / (60 * 60 * 1000)))} timer over)`);
         } else if (timeRemaining < warningThresholdMs) {
           // Under 20% tid tilbage
           warningCount++;
@@ -801,9 +1259,6 @@ class JiraService {
             status: 'warning',
             timeRemainingMs: timeRemaining
           });
-          console.log(`  ${issue.key}: ADVARSEL (${Math.round(timeRemaining / (60 * 60 * 1000))} timer tilbage)`);
-        } else {
-          console.log(`  ${issue.key}: OK (${Math.round(timeRemaining / (60 * 60 * 1000))} timer tilbage)`);
         }
       }
 
@@ -825,8 +1280,6 @@ class JiraService {
       } else {
         status = 'green';
       }
-
-      console.log(`SLA Check - ${slaType}: Status=${status}, Aktive=${activeCount}, Overskredet=${breachedCount}, Advarsel=${warningCount}`);
 
       return {
         status,

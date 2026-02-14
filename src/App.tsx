@@ -31,13 +31,35 @@ type JiraIssue = {
   age: string;
 };
 
+type TrendWeek = {
+  weekLabel: string;
+  created: number;
+  resolved: number;
+  open: number;
+};
+
+type TrendDay = {
+  dayLabel: string;
+  created: number;
+  resolved: number;
+  open: number;
+};
+
+type TrendData = {
+  weeks: TrendWeek[];
+  currentWeek: TrendDay[];
+};
+
 type JiraSupportData = {
   openIssues: number;
   newToday: number;
   closedToday: number;
   criticalP1: number;
   topIssues: JiraIssue[];
-  trendData: { date: string; created: number; resolved: number }[];
+  trendData: TrendData;
+  timeToFirstResponse: string;
+  slaCompliance?: number;        // HallMonitor only
+  averageLifetime?: string;      // SwitchPay only
 };
 
 type JiraSupportResponse = {
@@ -288,6 +310,13 @@ export default function App()
   const fmt = (v: string | number | undefined | null) =>
     v === undefined || v === null ? "–" : String(v);
 
+  const getSlaColor = (compliance: number | null | undefined) => {
+    if (compliance === null || compliance === undefined) return "text-slate-400";
+    if (compliance >= 90) return "text-emerald-400";
+    if (compliance >= 80) return "text-amber-300";
+    return "text-red-400";
+  };
+
   const hmTotalAgents =
     hm?.agents.ready && hm?.agents.busy !== undefined && hm?.agents.other !== undefined
       ? hm.agents.ready + hm.agents.busy + hm.agents.other
@@ -410,8 +439,24 @@ export default function App()
               <div className="grid grid-cols-4 gap-2 mb-3">
                 <Kpi label="Åbne sager" value={fmt(jiraSupport?.hallmonitor?.openIssues ?? 0)} />
                 <Kpi label="Nye i dag" value={fmt(jiraSupport?.hallmonitor?.newToday ?? 0)} />
-                <Kpi label="Lukket i dag" value={fmt(jiraSupport?.hallmonitor?.closedToday ?? 0)} tone="good" />
-                <Kpi label="Kritiske (P1)" value={fmt(jiraSupport?.hallmonitor?.criticalP1 ?? 0)} tone="bad" />
+                <Kpi label="Lukket i dag" value={fmt(jiraSupport?.hallmonitor?.closedToday ?? 0)} />
+                <Kpi label="Kritiske (P1)" value={fmt(jiraSupport?.hallmonitor?.criticalP1 ?? 0)} />
+              </div>
+              <div className="grid grid-cols-2 gap-2 mb-3">
+                <Kpi
+                  label="Tid til første svar / lukket"
+                  value={jiraSupport?.hallmonitor?.timeToFirstResponse ?? '–'}
+                />
+                <div className="rounded-xl border border-slate-800 bg-slate-950/80 px-2 py-1.5">
+                  <div className="text-[9px] font-medium uppercase tracking-wide text-slate-400">
+                    SLA Compliance
+                  </div>
+                  <div className={`mt-0.5 text-xl font-semibold ${getSlaColor(jiraSupport?.hallmonitor?.slaCompliance)}`}>
+                    {jiraSupport?.hallmonitor?.slaCompliance !== null && jiraSupport?.hallmonitor?.slaCompliance !== undefined
+                      ? `${jiraSupport.hallmonitor.slaCompliance}%`
+                      : '–'}
+                  </div>
+                </div>
               </div>
               <TrendChart
                 data={jiraSupport?.hallmonitor?.trendData ?? []}
@@ -492,8 +537,18 @@ export default function App()
               <div className="grid grid-cols-4 gap-2 mb-3">
                 <Kpi label="Åbne sager" value={fmt(jiraSupport?.switchpay?.openIssues ?? 0)} />
                 <Kpi label="Nye i dag" value={fmt(jiraSupport?.switchpay?.newToday ?? 0)} />
-                <Kpi label="Lukket i dag" value={fmt(jiraSupport?.switchpay?.closedToday ?? 0)} tone="good" />
-                <Kpi label="Kritiske (P1)" value={fmt(jiraSupport?.switchpay?.criticalP1 ?? 0)} tone="warn" />
+                <Kpi label="Lukket i dag" value={fmt(jiraSupport?.switchpay?.closedToday ?? 0)} />
+                <Kpi label="Kritiske (P1)" value={fmt(jiraSupport?.switchpay?.criticalP1 ?? 0)} />
+              </div>
+              <div className="grid grid-cols-2 gap-2 mb-3">
+                <Kpi
+                  label="Tid til første svar / lukket"
+                  value={jiraSupport?.switchpay?.timeToFirstResponse ?? '–'}
+                />
+                <Kpi
+                  label="Gennemsnitlig levetid"
+                  value={jiraSupport?.switchpay?.averageLifetime ?? '–'}
+                />
               </div>
               <TrendChart
                 data={jiraSupport?.switchpay?.trendData ?? []}
@@ -584,7 +639,7 @@ function QueueHeader({
           </span>
           <span className="font-medium">{title}</span>
         </div>
-        <span className="text-[10px] text-slate-400">{agentsText}</span>
+        <span className="text-[10px] text-white">{agentsText}</span>
       </div>
       <div className="flex items-center justify-end gap-1 text-xs">
         <Badge color="bg-emerald-500" value={counts.green} />
@@ -628,10 +683,10 @@ function QueueStatsRow({
             className="rounded-lg border border-slate-800 bg-slate-950/70
                        px-3 py-2 h-12 flex flex-col items-center justify-center"
           >
-            <div className="text-[0.6rem] uppercase tracking-wide text-slate-400">
+            <div className="text-[0.6rem] uppercase tracking-wide text-white">
               {item.label}
             </div>
-            <div className="text-sm font-semibold text-slate-100">
+            <div className="text-sm font-semibold text-white">
               {item.value}
             </div>
           </div>
@@ -648,18 +703,20 @@ function QueueStatsRow({
           key={item.label}
           className={`rounded-lg px-2 py-2 ${
             item.highlight
-              ? "bg-slate-100 text-slate-900"
-              : "bg-slate-950/70 border border-slate-800 text-slate-100"
+              ? "bg-slate-100"
+              : "bg-slate-950/70 border border-slate-800"
           }`}
         >
           <div
             className={`text-[0.6rem] uppercase tracking-wide ${
-              item.highlight ? "text-slate-600" : "text-slate-400"
+              item.highlight ? "text-slate-700" : "text-white"
             }`}
           >
             {item.label}
           </div>
-          <div className="text-sm font-semibold">{item.value}</div>
+          <div className={`text-sm font-semibold ${
+            item.highlight ? "text-slate-900" : "text-white"
+          }`}>{item.value}</div>
         </div>
       ))}
     </div>
@@ -671,67 +728,83 @@ function QueueStatsRow({
 function Kpi({
   label,
   value,
-  tone,
 }: {
   label: string;
   value: string;
-  tone?: "good" | "bad" | "warn";
 }) {
-  const toneClass =
-    tone === "good"
-      ? "text-emerald-400"
-      : tone === "bad"
-      ? "text-red-400"
-      : tone === "warn"
-      ? "text-amber-300"
-      : "text-sky-300";
-
   return (
     <div className="rounded-xl border border-slate-800 bg-slate-950/80 px-2 py-1.5">
-      <div className="text-[9px] font-medium uppercase tracking-wide text-slate-400">
+      <div className="text-[9px] font-medium uppercase tracking-wide text-white">
         {label}
       </div>
-      <div className={`mt-0.5 text-xl font-semibold ${toneClass}`}>{value}</div>
+      <div className="mt-0.5 text-xl font-semibold text-white">{value}</div>
     </div>
   );
 }
 
-/* --- Jira Support – trend chart --- */
+/* --- Jira Support – trend chart (8 uger) --- */
 
 function TrendChart({
   data,
   label,
 }: {
-  data: { date: string; created: number; resolved: number; open?: number }[];
+  data: TrendData;
   label: string;
 }) {
-  if (!data || data.length === 0) {
+  if (!data || (!data.weeks?.length && !data.currentWeek?.length)) {
     return <div className="text-xs text-slate-400 text-center py-4">Ingen data tilgængelig</div>;
   }
 
+  // Kombiner dage og uger til én array for plotting (nyeste først)
+  const allPoints = [
+    // Indeværende uge (i omvendt rækkefølge - nyeste først)
+    ...data.currentWeek.slice().reverse().map(d => ({
+      label: d.dayLabel,
+      created: d.created,
+      resolved: d.resolved,
+      open: d.open
+    })),
+    // Historiske uger (i omvendt rækkefølge - nyeste først)
+    ...data.weeks.slice().reverse().map(w => ({
+      label: w.weekLabel,
+      created: w.created,
+      resolved: w.resolved,
+      open: w.open
+    }))
+  ];
+
   const maxValue = Math.max(
-    ...data.map((d) => Math.max(d.created, d.resolved, d.open || 0)),
+    ...allPoints.map(p => Math.max(p.created, p.resolved, p.open)),
     1
   );
-  const chartHeight = 70; // px - lidt højere for plads til tal over søjler
-  const padding = 2; // px - reduceret bottom padding
-  const topPadding = 10; // px - ekstra plads til tal over søjler
 
-  // Beregn punkter for SVG path
-  const createPath = (values: number[]) => {
+  const chartHeight = 70;
+  const padding = 2;
+  const topPadding = 10;
+
+  // Beregn punkter for SVG path - separat for dage og uger
+  const createPath = (values: number[], startIndex: number) => {
     const points = values.map((val, i) => {
-      const x = (i / (values.length - 1)) * 100;
+      const totalIndex = startIndex + i;
+      const x = (totalIndex / (allPoints.length - 1)) * 100;
       const y = chartHeight - topPadding - (val / maxValue) * (chartHeight - topPadding - padding) - padding;
       return `${x},${y}`;
     });
     return `M ${points.join(" L ")}`;
   };
 
-  const createdValues = data.map(d => d.created);
-  const resolvedValues = data.map(d => d.resolved);
+  // Split data i dage (nuværende uge) og uger (historisk)
+  const daysCount = data.currentWeek.length;
 
-  const createdPath = createPath(createdValues);
-  const resolvedPath = createPath(resolvedValues);
+  const createdValuesDays = allPoints.slice(0, daysCount).map(p => p.created);
+  const resolvedValuesDays = allPoints.slice(0, daysCount).map(p => p.resolved);
+  const createdValuesWeeks = allPoints.slice(daysCount).map(p => p.created);
+  const resolvedValuesWeeks = allPoints.slice(daysCount).map(p => p.resolved);
+
+  const createdPathDays = createPath(createdValuesDays, 0);
+  const resolvedPathDays = createPath(resolvedValuesDays, 0);
+  const createdPathWeeks = createPath(createdValuesWeeks, daysCount);
+  const resolvedPathWeeks = createPath(resolvedValuesWeeks, daysCount);
 
   return (
     <div className="space-y-1">
@@ -741,9 +814,8 @@ function TrendChart({
       <div className="relative">
         {/* Åbne sager tal - HTML overlay over SVG */}
         <div className="absolute inset-0 pointer-events-none">
-          {data.map((point, i) => {
-            if (!point.open) return null;
-            const x = (i / (data.length - 1)) * 100;
+          {allPoints.map((point, i) => {
+            const x = (i / (allPoints.length - 1)) * 100;
             const barHeight = (point.open / maxValue) * (chartHeight - topPadding - padding);
             const y = topPadding + (chartHeight - topPadding - barHeight - padding);
 
@@ -768,102 +840,140 @@ function TrendChart({
           className="w-full"
           style={{ height: `${chartHeight}px` }}
         >
-        {/* Åbne sager - tynde søjler ALLERFØRST så alt andet ligger oven på */}
-        {data.map((point, i) => {
-          if (!point.open) return null;
-          const x = (i / (data.length - 1)) * 100;
-          const barWidth = 100 / data.length * 0.6; // 60% af tilgængelig plads
-          const barHeight = (point.open / maxValue) * (chartHeight - topPadding - padding);
-          const y = chartHeight - topPadding - barHeight - padding;
+          {/* Åbne sager - tynde søjler ALLERFØRST så alt andet ligger oven på */}
+          {allPoints.map((point, i) => {
+            const x = (i / (allPoints.length - 1)) * 100;
+            const barWidth = 100 / allPoints.length * 0.6;
+            const barHeight = (point.open / maxValue) * (chartHeight - topPadding - padding);
+            const y = chartHeight - topPadding - barHeight - padding;
 
-          return (
-            <rect
-              key={`bar-${i}`}
-              x={x - barWidth / 2}
-              y={y}
-              width={barWidth}
-              height={barHeight}
-              fill="rgb(51 65 85)"
-              opacity="0.3"
-            />
-          );
-        })}
+            return (
+              <rect
+                key={`bar-${i}`}
+                x={x - barWidth / 2}
+                y={y}
+                width={barWidth}
+                height={barHeight}
+                fill="rgb(51 65 85)"
+                opacity="0.3"
+              />
+            );
+          })}
 
-        {/* Grid lines */}
-        <line x1="0" y1={chartHeight / 2} x2="100" y2={chartHeight / 2}
-          stroke="rgb(51 65 85)" strokeWidth="0.2" strokeDasharray="1,1" />
+          {/* Grid lines */}
+          <line x1="0" y1={chartHeight / 2} x2="100" y2={chartHeight / 2}
+            stroke="rgb(51 65 85)" strokeWidth="0.2" strokeDasharray="1,1" />
 
-        {/* Created line */}
-        <path
-          d={createdPath}
-          fill="none"
-          stroke="rgb(14 165 233)"
-          strokeWidth="0.8"
-          vectorEffect="non-scaling-stroke"
-        />
+          {/* Created line - Dage */}
+          <path
+            d={createdPathDays}
+            fill="none"
+            stroke="rgb(14 165 233)"
+            strokeWidth="0.8"
+            vectorEffect="non-scaling-stroke"
+          />
 
-        {/* Resolved line */}
-        <path
-          d={resolvedPath}
-          fill="none"
-          stroke="rgb(16 185 129)"
-          strokeWidth="0.8"
-          vectorEffect="non-scaling-stroke"
-        />
+          {/* Created line - Uger */}
+          <path
+            d={createdPathWeeks}
+            fill="none"
+            stroke="rgb(14 165 233)"
+            strokeWidth="0.8"
+            vectorEffect="non-scaling-stroke"
+          />
 
-        {/* Created dots */}
-        {createdValues.map((val, i) => {
-          const x = (i / (createdValues.length - 1)) * 100;
-          const y = chartHeight - topPadding - (val / maxValue) * (chartHeight - topPadding - padding) - padding;
-          return (
-            <circle
-              key={`c-${i}`}
-              cx={x}
-              cy={y}
-              r="0.6"
-              fill="rgb(14 165 233)"
-              vectorEffect="non-scaling-stroke"
-            />
-          );
-        })}
+          {/* Resolved line - Dage */}
+          <path
+            d={resolvedPathDays}
+            fill="none"
+            stroke="rgb(16 185 129)"
+            strokeWidth="0.8"
+            vectorEffect="non-scaling-stroke"
+          />
 
-        {/* Resolved dots */}
-        {resolvedValues.map((val, i) => {
-          const x = (i / (resolvedValues.length - 1)) * 100;
-          const y = chartHeight - topPadding - (val / maxValue) * (chartHeight - topPadding - padding) - padding;
-          return (
-            <circle
-              key={`r-${i}`}
-              cx={x}
-              cy={y}
-              r="0.6"
-              fill="rgb(16 185 129)"
-              vectorEffect="non-scaling-stroke"
-            />
-          );
-        })}
+          {/* Resolved line - Uger */}
+          <path
+            d={resolvedPathWeeks}
+            fill="none"
+            stroke="rgb(16 185 129)"
+            strokeWidth="0.8"
+            vectorEffect="non-scaling-stroke"
+          />
 
+          {/* Created dots - alle punkter */}
+          {allPoints.map((point, i) => {
+            const x = (i / (allPoints.length - 1)) * 100;
+            const y = chartHeight - topPadding - (point.created / maxValue) * (chartHeight - topPadding - padding) - padding;
+            return (
+              <circle
+                key={`c-${i}`}
+                cx={x}
+                cy={y}
+                r="0.6"
+                fill="rgb(14 165 233)"
+                vectorEffect="non-scaling-stroke"
+              />
+            );
+          })}
+
+          {/* Resolved dots - alle punkter */}
+          {allPoints.map((point, i) => {
+            const x = (i / (allPoints.length - 1)) * 100;
+            const y = chartHeight - topPadding - (point.resolved / maxValue) * (chartHeight - topPadding - padding) - padding;
+            return (
+              <circle
+                key={`r-${i}`}
+                cx={x}
+                cy={y}
+                r="0.6"
+                fill="rgb(16 185 129)"
+                vectorEffect="non-scaling-stroke"
+              />
+            );
+          })}
         </svg>
       </div>
 
-      {/* Data labels - hver dag */}
-      <div className="relative w-full" style={{ minHeight: '18px' }}>
-        {data.map((point, i) => {
-          const x = (i / (data.length - 1)) * 100;
+      {/* Data labels fjernet - kun åbne sager vises i toppen af søjlerne */}
+
+      {/* Created og Resolved tal */}
+      <div className="relative w-full" style={{ minHeight: '16px' }}>
+        {allPoints.map((point, i) => {
+          const x = (i / (allPoints.length - 1)) * 100;
           return (
             <div
               key={`data-${i}`}
-              className="absolute text-[6px] -translate-x-1/2 flex flex-col items-center leading-tight"
+              className="absolute -translate-x-1/2 text-center"
               style={{ left: `${x}%`, top: 0 }}
             >
-              <span className="text-sky-400 font-medium">{point.created}</span>
-              <span className="text-emerald-400 font-medium">{point.resolved}</span>
+              <div className="text-[6px] font-medium" style={{ color: 'rgb(14 165 233)' }}>
+                {point.created}
+              </div>
+              <div className="text-[6px] font-medium" style={{ color: 'rgb(16 185 129)' }}>
+                {point.resolved}
+              </div>
             </div>
           );
         })}
       </div>
 
-      <div className="flex justify-between text-[9px] text-slate-400">
+      {/* Uge/Dag labels */}
+      <div className="relative w-full" style={{ minHeight: '12px' }}>
+        {allPoints.map((point, i) => {
+          const x = (i / (allPoints.length - 1)) * 100;
+          return (
+            <div
+              key={`label-${i}`}
+              className="absolute text-[7px] -translate-x-1/2 text-center font-semibold text-white"
+              style={{ left: `${x}%`, top: 0 }}
+            >
+              {point.label}
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="flex justify-between text-[9px] text-white mt-1">
         <div className="flex items-center gap-2">
           <div className="flex items-center gap-1">
             <div className="w-2 h-2 bg-sky-500 rounded-full" />
@@ -912,10 +1022,10 @@ function PipelineColumns({
                 className={`w-5 rounded-t-lg shadow-lg shadow-black/40 ${colorClass}`}
                 style={{ height: `${barHeight}px` }}
               />
-              <div className="text-xs font-semibold text-slate-100">
+              <div className="text-xs font-semibold text-white">
                 {s.value}
               </div>
-              <div className="text-[10px] text-slate-400 text-center">
+              <div className="text-[10px] text-white text-center">
                 {s.label}
               </div>
             </div>
