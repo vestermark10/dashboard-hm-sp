@@ -5,6 +5,7 @@ import telephonyService from './services/telephonyService.mjs';
 import jiraService from './services/jiraService.mjs';
 import economicService from './services/economicService.mjs';
 import statusService from './services/statusService.mjs';
+import celebrationService from './services/celebrationService.mjs';
 
 const app = express();
 const PORT = 3001;
@@ -100,6 +101,20 @@ app.get("/api/jira/sla", async (req, res) => {
     console.error('API fejl - Jira SLA:', error);
     res.status(500).json({
       error: 'Kunne ikke hente SLA data',
+      message: error.message
+    });
+  }
+});
+
+// Fødselsdage og jubilæer
+app.get("/api/celebrations", (req, res) => {
+  try {
+    const data = celebrationService.getUpcomingCelebrations();
+    res.json(data);
+  } catch (error) {
+    console.error('API fejl - Celebrations:', error);
+    res.status(500).json({
+      error: 'Kunne ikke hente celebrations data',
       message: error.message
     });
   }

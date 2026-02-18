@@ -58,8 +58,10 @@ type JiraSupportData = {
   topIssues: JiraIssue[];
   trendData: TrendData;
   timeToFirstResponse: string;
+  timeToFirstResponseChange?: number | null;
   slaCompliance?: number;        // HallMonitor only
   averageLifetime?: string;      // SwitchPay only
+  averageLifetimeChange?: number | null;
 };
 
 type JiraSupportResponse = {
@@ -80,6 +82,7 @@ type JiraOrdersPipelineResponse = {
 type EconomicData = {
   openOrders: number;
   openDraftInvoices: number;
+  rackbeatDrafts: number;
 };
 
 type EconomicResponse = {
@@ -132,6 +135,14 @@ type StatusResponse = {
   lastUpdated: string;
 };
 
+type CelebrationEvent = {
+  name: string;
+  type: 'birthday' | 'anniversary';
+  date: string;
+  daysUntil: number;
+  detail: string | null;
+};
+
 type CriticalIssue = {
   key: string;
   status: 'breached' | 'warning';
@@ -161,20 +172,21 @@ export default function App()
   const [economic, setEconomic] = useState<EconomicResponse | null>(null);
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [sla, setSla] = useState<SlaResponse | null>(null);
+  const [celebrations, setCelebrations] = useState<CelebrationEvent[]>([]);
   const [showOutagePopup, setShowOutagePopup] = useState<boolean>(false);
-  const [, setDismissedOutageKey] = useState<string | null>(() => {
-    // Hent fra localStorage ved opstart
+
+  // Ryd udløbne outage-dismissals fra localStorage ved opstart
+  useEffect(() => {
     const stored = localStorage.getItem('dismissedOutageKey');
     if (stored) {
-      const parsed = JSON.parse(stored);
-      // Tjek om den er udløbet (24 timer gammel)
-      if (parsed.timestamp && Date.now() - parsed.timestamp < 24 * 60 * 60 * 1000) {
-        return parsed.key;
-      }
-      localStorage.removeItem('dismissedOutageKey');
+      try {
+        const parsed = JSON.parse(stored);
+        if (!parsed.timestamp || Date.now() - parsed.timestamp >= 24 * 60 * 60 * 1000) {
+          localStorage.removeItem('dismissedOutageKey');
+        }
+      } catch { localStorage.removeItem('dismissedOutageKey'); }
     }
-    return null;
-  });
+  }, []);
   const [error, setError] = useState<string | null>(null);
   const [lastUpdate, setLastUpdate] = useState<string>("");
   const formatTime = () => {
@@ -224,6 +236,24 @@ export default function App()
 
     // Auto-refresh hvert 5. minut
     const interval = setInterval(fetchAllData, 300000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Hent fødselsdage/jubilæer én gang dagligt
+  useEffect(() => {
+    const fetchCelebrations = async () => {
+      try {
+        const res = await axios.get<CelebrationEvent[]>(`${API_BASE_URL}/api/celebrations`);
+        setCelebrations(res.data);
+      } catch (err) {
+        console.error("Celebrations API fejl:", err);
+      }
+    };
+
+    fetchCelebrations();
+
+    // Refresh én gang i døgnet (24 timer)
+    const interval = setInterval(fetchCelebrations, 24 * 60 * 60 * 1000);
     return () => clearInterval(interval);
   }, []);
 
@@ -280,14 +310,12 @@ export default function App()
               key: currentOutageKey,
               timestamp: Date.now()
             }));
-            setDismissedOutageKey(currentOutageKey);
           }, 300000);
         }
 
         // Hvis outage er overstået, nulstil dismissed key så næste outage vises
         if (!newStatus.hasOutage && storedDismissedKey) {
           localStorage.removeItem('dismissedOutageKey');
-          setDismissedOutageKey(null);
         }
 
         setStatus(newStatus);
@@ -331,6 +359,10 @@ export default function App()
     <div className="h-screen overflow-hidden bg-slate-950 text-slate-50">
       <div className="pointer-events-none fixed inset-0 bg-gradient-to-b from-slate-900/60 via-slate-950 to-black -z-10" />
 
+      {/* Celebration animations */}
+      {celebrations.some(e => e.daysUntil === 0 && e.type === 'birthday') && <FallingFlags />}
+      {celebrations.some(e => e.daysUntil === 0 && e.type === 'anniversary') && <RisingRockets />}
+
       {/* Outage Alert Popup */}
       {showOutagePopup && status?.hasOutage && (
         <OutagePopup
@@ -355,8 +387,6 @@ export default function App()
               timestamp: Date.now()
             }));
 
-            // Derefter opdater React state
-            setDismissedOutageKey(outageKey);
             setShowOutagePopup(false);
           }}
         />
@@ -446,6 +476,8 @@ export default function App()
                 <Kpi
                   label="Tid til første svar / lukket"
                   value={jiraSupport?.hallmonitor?.timeToFirstResponse ?? '–'}
+                  changePercent={jiraSupport?.hallmonitor?.timeToFirstResponseChange}
+                  lowerIsBetter
                 />
                 <div className="rounded-xl border border-slate-800 bg-slate-950/80 px-2 py-1.5">
                   <div className="text-[9px] font-medium uppercase tracking-wide text-slate-400">
@@ -459,7 +491,7 @@ export default function App()
                 </div>
               </div>
               <TrendChart
-                data={jiraSupport?.hallmonitor?.trendData ?? []}
+                data={jiraSupport?.hallmonitor?.trendData ?? { weeks: [], currentWeek: [] }}
                 label="30 dages trend"
               />
             </Card>
@@ -475,7 +507,10 @@ export default function App()
             <Card title="e-conomic – Åbne poster">
               <div className="grid grid-cols-2 gap-4">
                 <Kpi label="Åbne ordrer" value={fmt(economic?.hallmonitor?.openOrders ?? 0)} />
-                <Kpi label="Åbne fakturakladder" value={fmt(economic?.hallmonitor?.openDraftInvoices ?? 0)} />
+                <DraftInvoiceKpi
+                  total={economic?.hallmonitor?.openDraftInvoices ?? 0}
+                  rackbeat={economic?.hallmonitor?.rackbeatDrafts ?? 0}
+                />
               </div>
             </Card>
           </section>
@@ -544,14 +579,18 @@ export default function App()
                 <Kpi
                   label="Tid til første svar / lukket"
                   value={jiraSupport?.switchpay?.timeToFirstResponse ?? '–'}
+                  changePercent={jiraSupport?.switchpay?.timeToFirstResponseChange}
+                  lowerIsBetter
                 />
                 <Kpi
                   label="Gennemsnitlig levetid"
                   value={jiraSupport?.switchpay?.averageLifetime ?? '–'}
+                  changePercent={jiraSupport?.switchpay?.averageLifetimeChange}
+                  lowerIsBetter
                 />
               </div>
               <TrendChart
-                data={jiraSupport?.switchpay?.trendData ?? []}
+                data={jiraSupport?.switchpay?.trendData ?? { weeks: [], currentWeek: [] }}
                 label="30 dages trend"
               />
             </Card>
@@ -567,11 +606,30 @@ export default function App()
             <Card title="e-conomic – Åbne poster">
               <div className="grid grid-cols-2 gap-4">
                 <Kpi label="Åbne ordrer" value={fmt(economic?.switchpay?.openOrders ?? 0)} />
-                <Kpi label="Åbne fakturakladder" value={fmt(economic?.switchpay?.openDraftInvoices ?? 0)} />
+                <DraftInvoiceKpi
+                  total={economic?.switchpay?.openDraftInvoices ?? 0}
+                  rackbeat={economic?.switchpay?.rackbeatDrafts ?? 0}
+                />
               </div>
             </Card>
           </section>
         </div>
+
+        {/* Fødselsdage og jubilæer */}
+        {celebrations.length > 0 && (
+          <div className="flex items-center justify-center gap-8 py-1.5">
+            {celebrations.map((event, i) => (
+              <div key={i} className="flex items-center gap-2 text-base font-semibold tracking-tight text-white">
+                {event.type === 'birthday' ? <DannebroFlag /> : <span>🚀</span>}
+                <span>{event.name}</span>
+                <span>
+                  {event.date} – {event.type === 'birthday' ? 'Fødselsdag' : 'Jubilæum'}
+                  {event.detail ? ` (${event.detail})` : ''}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
 
         <footer className="flex justify-between text-[10px] text-slate-500 mt-2 py-1">
           <span>Senest opdateret: {lastUpdate || "Loading..."}</span>
@@ -728,16 +786,53 @@ function QueueStatsRow({
 function Kpi({
   label,
   value,
+  changePercent,
+  lowerIsBetter,
 }: {
   label: string;
   value: string;
+  changePercent?: number | null;
+  lowerIsBetter?: boolean;
 }) {
+  // For tid-metrics: lavere = bedre (grøn), højere = dårligere (rød)
+  const showChange = changePercent !== undefined && changePercent !== null;
+  const isImprovement = lowerIsBetter ? changePercent! < 0 : changePercent! > 0;
+  const arrow = changePercent! > 0 ? '\u2191' : '\u2193'; // ↑ eller ↓
+  const changeColor = isImprovement ? 'text-emerald-400' : 'text-red-400';
+
   return (
     <div className="rounded-xl border border-slate-800 bg-slate-950/80 px-2 py-1.5">
       <div className="text-[9px] font-medium uppercase tracking-wide text-white">
         {label}
       </div>
-      <div className="mt-0.5 text-xl font-semibold text-white">{value}</div>
+      <div className="mt-0.5 flex items-baseline gap-1.5">
+        <span className="text-xl font-semibold text-white">{value}</span>
+        {showChange && (
+          <span className={`text-[9px] font-medium ${changeColor}`}>
+            {arrow}{Math.abs(changePercent!)}%
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function DraftInvoiceKpi({ total, rackbeat }: { total: number; rackbeat: number }) {
+  return (
+    <div className="rounded-xl border border-slate-800 bg-slate-950/80 px-2 py-1.5 flex items-stretch gap-0">
+      <div className="flex-1">
+        <div className="text-[9px] font-medium uppercase tracking-wide text-white">
+          Åbne fakturakladder
+        </div>
+        <div className="mt-0.5 text-xl font-semibold text-white">{total}</div>
+      </div>
+      <div className="mx-2 w-px bg-slate-700 self-stretch" />
+      <div className="flex-1 text-right">
+        <div className="text-[9px] font-medium uppercase tracking-wide text-white">
+          Heraf fra Rackbeat
+        </div>
+        <div className="mt-0.5 text-xl font-semibold text-white">{rackbeat}</div>
+      </div>
     </div>
   );
 }
@@ -1256,6 +1351,135 @@ function OutagePopup({
           Popup lukkes automatisk efter 5 minutter
         </div>
       </div>
+    </div>
+  );
+}
+
+/* --- Dannebrog flag (SVG, da flag-emojis ikke virker på Windows) --- */
+
+function DannebroFlag({ size = 20 }: { size?: number }) {
+  const h = size * 0.7;
+  return (
+    <svg width={size} height={h} viewBox="0 0 20 14" className="inline-block">
+      <rect width="20" height="14" fill="#c8102e" />
+      <rect x="6" y="0" width="2.5" height="14" fill="#fff" />
+      <rect x="0" y="5.5" width="20" height="2.5" fill="#fff" />
+    </svg>
+  );
+}
+
+/* --- Fødselsdagsanimation: Flag falder ned fra toppen --- */
+
+function FallingFlags() {
+  const [flags, setFlags] = useState<{ id: number; left: number; delay: number; duration: number }[]>([]);
+
+  useEffect(() => {
+    let id = 0;
+    const spawn = () => {
+      setFlags(prev => {
+        // Hold maks 6 flag på skærmen ad gangen
+        const active = prev.filter(f => Date.now() - f.id < f.duration * 1000);
+        return [...active, {
+          id: Date.now() + id++,
+          left: 5 + Math.random() * 90,
+          delay: 0,
+          duration: 12 + Math.random() * 8,
+        }];
+      });
+    };
+
+    spawn();
+    // Nyt flag hvert 8-15 sekund
+    const interval = setInterval(spawn, 8000 + Math.random() * 7000);
+    return () => clearInterval(interval);
+  }, []);
+
+  return (
+    <div className="pointer-events-none fixed inset-0 z-40 overflow-hidden">
+      {flags.map(flag => (
+        <div
+          key={flag.id}
+          className="absolute animate-flag-fall"
+          style={{
+            left: `${flag.left}%`,
+            animationDuration: `${flag.duration}s`,
+            animationDelay: `${flag.delay}s`,
+          }}
+        >
+          <DannebroFlag size={28} />
+        </div>
+      ))}
+      <style>{`
+        @keyframes flag-fall {
+          0% { top: -40px; opacity: 0.8; transform: rotate(0deg) translateX(0px); }
+          25% { transform: rotate(15deg) translateX(20px); }
+          50% { transform: rotate(-10deg) translateX(-15px); }
+          75% { transform: rotate(8deg) translateX(10px); }
+          100% { top: 105%; opacity: 0.3; transform: rotate(-5deg) translateX(-5px); }
+        }
+        .animate-flag-fall {
+          animation-name: flag-fall;
+          animation-timing-function: linear;
+          animation-fill-mode: forwards;
+        }
+      `}</style>
+    </div>
+  );
+}
+
+/* --- Jubilæumsanimation: Raketter stiger op fra bunden --- */
+
+function RisingRockets() {
+  const [rockets, setRockets] = useState<{ id: number; left: number; delay: number; duration: number }[]>([]);
+
+  useEffect(() => {
+    let id = 0;
+    const spawn = () => {
+      setRockets(prev => {
+        const active = prev.filter(r => Date.now() - r.id < r.duration * 1000);
+        return [...active, {
+          id: Date.now() + id++,
+          left: 10 + Math.random() * 80,
+          delay: 0,
+          duration: 6 + Math.random() * 4,
+        }];
+      });
+    };
+
+    spawn();
+    // Ny raket hvert 10-18 sekund
+    const interval = setInterval(spawn, 10000 + Math.random() * 8000);
+    return () => clearInterval(interval);
+  }, []);
+
+  return (
+    <div className="pointer-events-none fixed inset-0 z-40 overflow-hidden">
+      {rockets.map(rocket => (
+        <div
+          key={rocket.id}
+          className="absolute text-2xl animate-rocket-rise"
+          style={{
+            left: `${rocket.left}%`,
+            animationDuration: `${rocket.duration}s`,
+            animationDelay: `${rocket.delay}s`,
+          }}
+        >
+          🚀
+        </div>
+      ))}
+      <style>{`
+        @keyframes rocket-rise {
+          0% { bottom: -40px; opacity: 0.7; transform: translateX(0px); }
+          30% { transform: translateX(10px); }
+          60% { transform: translateX(-8px); }
+          100% { bottom: 105%; opacity: 0.2; transform: translateX(3px); }
+        }
+        .animate-rocket-rise {
+          animation-name: rocket-rise;
+          animation-timing-function: ease-out;
+          animation-fill-mode: forwards;
+        }
+      `}</style>
     </div>
   );
 }

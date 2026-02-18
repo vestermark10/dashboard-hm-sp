@@ -135,7 +135,8 @@ class EconomicService {
         const isMockHallmonitor = productName === 'HallMonitor';
         return {
           openOrders: isMockHallmonitor ? 14 : 9,
-          openDraftInvoices: isMockHallmonitor ? 5 : 3
+          openDraftInvoices: isMockHallmonitor ? 5 : 3,
+          rackbeatDrafts: isMockHallmonitor ? 2 : 1
         };
       }
 
@@ -181,9 +182,11 @@ class EconomicService {
       const draftOrderCount = draftOrdersResponse.data.collection?.length || 0;
       const sentOrderCount = allSentOrders.length;
       const totalOrderCount = draftOrderCount + sentOrderCount;
-      const draftInvoiceCount = draftsResponse.data.collection?.length || 0;
+      const draftInvoices = draftsResponse.data.collection || [];
+      const draftInvoiceCount = draftInvoices.length;
+      const rackbeatDraftCount = draftInvoices.filter(d => d.externalId).length;
 
-      console.log(`${productName} - e-conomic: ${draftOrderCount} draft ordrer + ${sentOrderCount} sent ordrer = ${totalOrderCount} total, ${draftInvoiceCount} fakturakladder`);
+      console.log(`${productName} - e-conomic: ${draftOrderCount} draft ordrer + ${sentOrderCount} sent ordrer = ${totalOrderCount} total, ${draftInvoiceCount} fakturakladder (${rackbeatDraftCount} fra Rackbeat)`);
 
       // Debug: Vis ordre numre hvis der er nogen
       if (draftOrderCount > 0) {
@@ -198,7 +201,8 @@ class EconomicService {
 
       return {
         openOrders: totalOrderCount,
-        openDraftInvoices: draftInvoiceCount
+        openDraftInvoices: draftInvoiceCount,
+        rackbeatDrafts: rackbeatDraftCount
       };
     } catch (error) {
       console.error(`Fejl ved hentning af ${productName} e-conomic data:`, error.message);
@@ -210,7 +214,8 @@ class EconomicService {
       const isMockHallmonitor = productName === 'HallMonitor';
       return {
         openOrders: isMockHallmonitor ? 14 : 9,
-        openDraftInvoices: isMockHallmonitor ? 5 : 3
+        openDraftInvoices: isMockHallmonitor ? 5 : 3,
+        rackbeatDrafts: isMockHallmonitor ? 2 : 1
       };
     }
   }

@@ -17,7 +17,8 @@ class JiraService {
       email: process.env.JIRA_HM_EMAIL,
       apiToken: process.env.JIRA_HM_API_TOKEN,
       supportProjectKey: process.env.JIRA_HM_SUPPORT_PROJECT_KEY || 'HS',
-      ordersProjectKey: process.env.JIRA_HM_ORDERS_PROJECT_KEY || 'HO'
+      ordersProjectKey: process.env.JIRA_HM_ORDERS_PROJECT_KEY || 'HO',
+      ttfrField: 'customfield_10128'  // "Time to first response" SLA field
     };
 
     // SwitchPay Jira configuration
@@ -26,7 +27,8 @@ class JiraService {
       email: process.env.JIRA_SP_EMAIL,
       apiToken: process.env.JIRA_SP_API_TOKEN,
       supportProjectKey: process.env.JIRA_SP_SUPPORT_PROJECT_KEY || 'SUP',
-      ordersProjectKey: process.env.JIRA_SP_ORDERS_PROJECT_KEY || 'ORDERS'
+      ordersProjectKey: process.env.JIRA_SP_ORDERS_PROJECT_KEY || 'ORDERS',
+      ttfrField: 'customfield_10044'  // "Time to first response" SLA field
     };
 
     // Cache for trend data (opdateres 1 gang per dag)
@@ -223,33 +225,32 @@ class JiraService {
       // Beregn metrics
       const metrics = this.calculateMetrics(issues, totalOpenIssues, closedToday, newToday);
 
-      // Beregn nye metrics (i parallel for performance)
-      const [timeToFirstResponse, slaComplianceOrLifetime] = await Promise.all([
-        this.calculateTimeToFirstResponse(config),
-        productName === 'HallMonitor'
-          ? this.calculateSlaCompliance(config)
-          : this.calculateAverageLifetime(config)
-      ]);
+      // Hent resolved issues én gang og beregn alle metrics fra samme dataset
+      const resolvedIssues = await this.fetchResolvedIssues30Days(config);
+      const timeToFirstResponse = this.calculateTimeToFirstResponse(config, resolvedIssues);
+      const slaComplianceOrLifetime = productName === 'HallMonitor'
+        ? this.calculateSlaCompliance(resolvedIssues)
+        : this.calculateAverageLifetime(resolvedIssues);
 
       // Hent trend data med cache
       const trendData = await this.getCachedTrendData(productName, config);
 
+      // timeToFirstResponse og averageLifetime returnerer nu objekter: { value, changePercent }
+      const ttfrObj = timeToFirstResponse || { value: '–', changePercent: null };
+      const lifetimeObj = (productName === 'SwitchPay' && slaComplianceOrLifetime) ? slaComplianceOrLifetime : null;
+
       return {
         ...metrics,
         trendData,
-        timeToFirstResponse: timeToFirstResponse || '–',
+        timeToFirstResponse: ttfrObj.value || '–',
+        timeToFirstResponseChange: ttfrObj.changePercent,
         slaCompliance: productName === 'HallMonitor' ? slaComplianceOrLifetime : null,
-        averageLifetime: productName === 'SwitchPay' ? (slaComplianceOrLifetime || '–') : null
+        averageLifetime: lifetimeObj ? (lifetimeObj.value || '–') : (productName === 'SwitchPay' ? '–' : null),
+        averageLifetimeChange: lifetimeObj ? lifetimeObj.changePercent : null
       };
 
     } catch (error) {
-      console.error(`Fejl ved hentning af ${productName} support data:`, error.message);
-      console.error(`URL: ${config.baseUrl}/rest/api/3/search`);
-      console.error(`Project Key: ${config.supportProjectKey}`);
-      if (error.response) {
-        console.error(`Response status: ${error.response.status}`);
-        console.error(`Response data:`, JSON.stringify(error.response.data, null, 2));
-      }
+      console.error(`${productName} support fejl:`, error.message, error.response?.status || '');
       return this.getSingleProductMockData(productName);
     }
   }
@@ -296,6 +297,14 @@ class JiraService {
       return minutes > 0 ? `${hours}t ${minutes}m` : `${hours}t`;
     }
     return `${minutes}m`;
+  }
+
+  median(values) {
+    const sorted = [...values].sort((a, b) => a - b);
+    const mid = Math.floor(sorted.length / 2);
+    return sorted.length % 2 === 0
+      ? (sorted[mid - 1] + sorted[mid]) / 2
+      : sorted[mid];
   }
 
   /**
@@ -348,178 +357,112 @@ class JiraService {
   }
 
   /**
-   * Beregner gennemsnitlig tid til første svar (ekskl. reporter kommentarer)
-   * Baseret på løste sager fra de sidste 30 dage
+   * Henter alle resolved issues fra de sidste 30 dage med alle nødvendige felter.
+   * Ét kald der dækker TTFR, SLA Compliance og Average Lifetime.
    */
-  async calculateTimeToFirstResponse(config) {
-    try {
-      // Get resolved issues from last 30 days
-      const thirtyDaysAgo = new Date();
-      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-      const dateStr = thirtyDaysAgo.toISOString().split('T')[0];
+  async fetchResolvedIssues30Days(config) {
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+    const dateStr = thirtyDaysAgo.toISOString().split('T')[0];
 
-      const jql = `project = ${config.supportProjectKey} AND statusCategory = Done AND resolutiondate >= "${dateStr} 00:00"`;
+    const jql = `project = ${config.supportProjectKey} AND statusCategory = Done AND resolutiondate >= "${dateStr} 00:00"`;
+    const fields = ['key', 'created', 'resolutiondate', config.ttfrField, 'customfield_10111'];
 
-      const response = await axios.post(
+    const response = await axios.post(
+      `${config.baseUrl}/rest/api/3/search/jql`,
+      { jql, fields, maxResults: 100 },
+      { headers: this.getAuthHeaders(config), timeout: 15000 }
+    );
+
+    let allIssues = [...response.data.issues];
+    let nextToken = response.data.nextPageToken;
+
+    while (nextToken) {
+      const pageResp = await axios.post(
         `${config.baseUrl}/rest/api/3/search/jql`,
-        {
-          jql,
-          fields: ['key', 'created', 'reporter', 'resolutiondate'],
-          maxResults: 100
-        },
-        {
-          headers: this.getAuthHeaders(config),
-          timeout: 15000
-        }
+        { jql, fields, maxResults: 100, nextPageToken: nextToken },
+        { headers: this.getAuthHeaders(config), timeout: 15000 }
       );
+      allIssues.push(...pageResp.data.issues);
+      nextToken = pageResp.data.nextPageToken;
+    }
 
-      let allIssues = [...response.data.issues];
-      let nextToken = response.data.nextPageToken;
+    return allIssues;
+  }
 
-      // Pagination
-      while (nextToken) {
-        const pageResp = await axios.post(
-          `${config.baseUrl}/rest/api/3/search/jql`,
-          { jql, fields: ['key', 'created', 'reporter', 'resolutiondate'], maxResults: 100, nextPageToken: nextToken },
-          { headers: this.getAuthHeaders(config), timeout: 15000 }
-        );
-        allIssues.push(...pageResp.data.issues);
-        nextToken = pageResp.data.nextPageToken;
-      }
+  /**
+   * Beregner median tid til første svar baseret på allerede hentede resolved issues.
+   */
+  calculateTimeToFirstResponse(config, resolvedIssues) {
+    try {
+      const fifteenDaysAgo = new Date();
+      fifteenDaysAgo.setDate(fifteenDaysAgo.getDate() - 15);
 
-      // Calculate first response time for each issue
-      const responseTimes = [];
+      const recentTimes = [];
+      const previousTimes = [];
 
-      for (const issue of allIssues.slice(0, 50)) { // Limit to 50 issues to avoid rate limits
-        try {
-          // Fetch comments for this issue
-          const commentsResp = await axios.get(
-            `${config.baseUrl}/rest/api/3/issue/${issue.key}/comment`,
-            {
-              headers: this.getAuthHeaders(config),
-              timeout: 10000
-            }
-          );
+      for (const issue of resolvedIssues) {
+        const slaField = issue.fields[config.ttfrField];
+        const completedCycle = slaField?.completedCycles?.[0];
 
-          const comments = commentsResp.data.comments || [];
-          const reporterEmail = issue.fields.reporter?.emailAddress || issue.fields.reporter?.name;
+        if (completedCycle?.elapsedTime?.millis) {
+          const elapsed = completedCycle.elapsedTime.millis;
+          const resolvedDate = issue.fields.resolutiondate ? new Date(issue.fields.resolutiondate) : null;
+          const isRecent = resolvedDate && resolvedDate >= fifteenDaysAgo;
 
-          // Find first non-reporter comment
-          const firstAgentComment = comments.find(
-            comment => comment.author?.emailAddress !== reporterEmail && comment.author?.name !== reporterEmail
-          );
-
-          const created = new Date(issue.fields.created);
-
-          if (firstAgentComment) {
-            // Use first agent comment time
-            const firstResponse = new Date(firstAgentComment.created);
-            const responseTime = this.calculateBusinessHours(created, firstResponse);
-
-            if (responseTime > 0) {
-              responseTimes.push(responseTime);
-            }
-          } else if (issue.fields.resolutiondate) {
-            // No comment - use resolution time as response
-            const resolved = new Date(issue.fields.resolutiondate);
-            const responseTime = this.calculateBusinessHours(created, resolved);
-
-            if (responseTime > 0) {
-              responseTimes.push(responseTime);
-            }
-          }
-        } catch (err) {
-          // Skip issues with comment fetch errors
-          console.error(`Error fetching comments for ${issue.key}:`, err.message);
+          (isRecent ? recentTimes : previousTimes).push(elapsed);
         }
       }
 
-      if (responseTimes.length === 0) {
-        return null;
+      const allTimes = [...recentTimes, ...previousTimes];
+      if (allTimes.length === 0) return null;
+
+      // Median — robust mod outliers
+      const sorted = [...allTimes].sort((a, b) => a - b);
+      const mid = Math.floor(sorted.length / 2);
+      const median = sorted.length % 2 === 0
+        ? (sorted[mid - 1] + sorted[mid]) / 2
+        : sorted[mid];
+
+      let changePercent = null;
+      if (recentTimes.length > 0 && previousTimes.length > 0) {
+        const recentMedian = this.median(recentTimes);
+        const prevMedian = this.median(previousTimes);
+        if (prevMedian > 0) {
+          changePercent = Math.round(((recentMedian - prevMedian) / prevMedian) * 100);
+        }
       }
 
-      // Calculate average
-      const avgResponseTime = responseTimes.reduce((a, b) => a + b, 0) / responseTimes.length;
-      return this.formatDuration(avgResponseTime);
-
+      return { value: this.formatDuration(median), changePercent };
     } catch (error) {
-      console.error('Error calculating time to first response:', error.message);
+      console.error('Error calculating TTFR:', error.message);
       return null;
     }
   }
 
   /**
-   * Beregner SLA compliance % for løste sager fra de sidste 30 dage
-   * Sammenligner resolutiondate med SLA Due (Business) field
+   * Beregner SLA compliance % baseret på allerede hentede resolved issues.
+   * Filtrerer key >= HS-1610 for at ekskludere gamle pre-SLA sager.
    */
-  async calculateSlaCompliance(config) {
+  calculateSlaCompliance(resolvedIssues) {
     try {
-      // Get resolved issues from last 30 days
-      const thirtyDaysAgo = new Date();
-      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-      const dateStr = thirtyDaysAgo.toISOString().split('T')[0];
-
-      const jql = `project = ${config.supportProjectKey} AND statusCategory = Done AND resolutiondate >= "${dateStr} 00:00"`;
-
-      const response = await axios.post(
-        `${config.baseUrl}/rest/api/3/search/jql`,
-        {
-          jql,
-          fields: ['key', 'resolutiondate', 'customfield_*'],
-          maxResults: 100
-        },
-        {
-          headers: this.getAuthHeaders(config),
-          timeout: 15000
-        }
-      );
-
-      let allIssues = [...response.data.issues];
-      let nextToken = response.data.nextPageToken;
-
-      // Pagination
-      while (nextToken) {
-        const pageResp = await axios.post(
-          `${config.baseUrl}/rest/api/3/search/jql`,
-          { jql, fields: ['key', 'resolutiondate', 'customfield_*'], maxResults: 100, nextPageToken: nextToken },
-          { headers: this.getAuthHeaders(config), timeout: 15000 }
-        );
-        allIssues.push(...pageResp.data.issues);
-        nextToken = pageResp.data.nextPageToken;
-      }
-
-      if (allIssues.length === 0) {
-        return null;
-      }
-
+      let total = 0;
       let withinSla = 0;
-      let totalWithSla = 0;
 
-      for (const issue of allIssues) {
-        // Find SLA Due field (reuse existing findCustomFieldValue pattern)
-        const slaDue = this.findCustomFieldValue(issue.fields, [
-          'SLA Due (Business)',
-          'SLA Due',
-          'Due Date'
-        ]);
+      for (const issue of resolvedIssues) {
+        // Filtrér gamle sager fra før SLA blev tracket korrekt
+        const keyNum = parseInt(issue.key?.split('-')[1] || '0', 10);
+        if (keyNum < 1610) continue;
 
-        if (slaDue && issue.fields.resolutiondate) {
-          totalWithSla++;
-          const dueDate = new Date(slaDue);
-          const resolvedDate = new Date(issue.fields.resolutiondate);
-
-          if (resolvedDate <= dueDate) {
-            withinSla++;
-          }
+        const ttr = issue.fields.customfield_10111;
+        const cycle = ttr?.completedCycles?.[0];
+        if (cycle) {
+          total++;
+          if (!cycle.breached) withinSla++;
         }
       }
 
-      if (totalWithSla === 0) {
-        return null;
-      }
-
-      return Math.round((withinSla / totalWithSla) * 100);
-
+      return total === 0 ? null : Math.round((withinSla / total) * 100);
     } catch (error) {
       console.error('Error calculating SLA compliance:', error.message);
       return null;
@@ -527,70 +470,41 @@ class JiraService {
   }
 
   /**
-   * Beregner gennemsnitlig levetid for løste sager fra de sidste 30 dage
-   * Fra created til resolutiondate
+   * Beregner gennemsnitlig levetid baseret på allerede hentede resolved issues.
    */
-  async calculateAverageLifetime(config) {
+  calculateAverageLifetime(resolvedIssues) {
     try {
-      // Get resolved issues from last 30 days
-      const thirtyDaysAgo = new Date();
-      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-      const dateStr = thirtyDaysAgo.toISOString().split('T')[0];
+      const fifteenDaysAgo = new Date();
+      fifteenDaysAgo.setDate(fifteenDaysAgo.getDate() - 15);
+      const recentLifetimes = [];
+      const previousLifetimes = [];
 
-      const jql = `project = ${config.supportProjectKey} AND statusCategory = Done AND resolutiondate >= "${dateStr} 00:00"`;
-
-      const response = await axios.post(
-        `${config.baseUrl}/rest/api/3/search/jql`,
-        {
-          jql,
-          fields: ['key', 'created', 'resolutiondate'],
-          maxResults: 100
-        },
-        {
-          headers: this.getAuthHeaders(config),
-          timeout: 15000
-        }
-      );
-
-      let allIssues = [...response.data.issues];
-      let nextToken = response.data.nextPageToken;
-
-      // Pagination
-      while (nextToken) {
-        const pageResp = await axios.post(
-          `${config.baseUrl}/rest/api/3/search/jql`,
-          { jql, fields: ['key', 'created', 'resolutiondate'], maxResults: 100, nextPageToken: nextToken },
-          { headers: this.getAuthHeaders(config), timeout: 15000 }
-        );
-        allIssues.push(...pageResp.data.issues);
-        nextToken = pageResp.data.nextPageToken;
-      }
-
-      if (allIssues.length === 0) {
-        return null;
-      }
-
-      const lifetimes = [];
-
-      for (const issue of allIssues) {
+      for (const issue of resolvedIssues) {
         if (issue.fields.created && issue.fields.resolutiondate) {
           const created = new Date(issue.fields.created);
           const resolved = new Date(issue.fields.resolutiondate);
           const lifetime = this.calculateBusinessHours(created, resolved);
 
           if (lifetime > 0) {
-            lifetimes.push(lifetime);
+            const isRecent = resolved >= fifteenDaysAgo;
+            (isRecent ? recentLifetimes : previousLifetimes).push(lifetime);
           }
         }
       }
 
-      if (lifetimes.length === 0) {
-        return null;
+      const allLifetimes = [...recentLifetimes, ...previousLifetimes];
+      if (allLifetimes.length === 0) return null;
+
+      const avgLifetime = allLifetimes.reduce((a, b) => a + b, 0) / allLifetimes.length;
+
+      let changePercent = null;
+      if (recentLifetimes.length > 0 && previousLifetimes.length > 0) {
+        const recentAvg = recentLifetimes.reduce((a, b) => a + b, 0) / recentLifetimes.length;
+        const previousAvg = previousLifetimes.reduce((a, b) => a + b, 0) / previousLifetimes.length;
+        changePercent = Math.round(((recentAvg - previousAvg) / previousAvg) * 100);
       }
 
-      const avgLifetime = lifetimes.reduce((a, b) => a + b, 0) / lifetimes.length;
-      return this.formatDuration(avgLifetime);
-
+      return { value: this.formatDuration(avgLifetime), changePercent };
     } catch (error) {
       console.error('Error calculating average lifetime:', error.message);
       return null;
@@ -1103,9 +1017,10 @@ class JiraService {
       ],
       trendData: this.generateMockTrendData(isMockHallmonitor),
       timeToFirstResponse: isMockHallmonitor ? '2t 15m' : '1t 45m',
+      timeToFirstResponseChange: isMockHallmonitor ? -12 : -8,
       ...(isMockHallmonitor
         ? { slaCompliance: 94 }
-        : { averageLifetime: '1d 3t' })
+        : { averageLifetime: '1d 3t', averageLifetimeChange: -15 })
     };
   }
 
@@ -1185,16 +1100,15 @@ class JiraService {
    */
   async getSlaStatusForType(config, slaType, slaHours) {
     try {
-      // JQL: Hent åbne sager med denne SLA type
-      // Bemærk: "SLA Type" og andre custom fields skal bruge deres felt-ID
-      // Du kan finde felt-ID'er via: GET /rest/api/3/field
-      const jql = `project = ${config.supportProjectKey} AND "SLA Type" = "${slaType}" AND status NOT IN ("Løst", "Annulleret")`;
+      // customfield_10144 = "SLA Type" (Enhed/Backend)
+      // customfield_10111 = "Time to resolution" (Jiras built-in SLA)
+      const jql = `project = ${config.supportProjectKey} AND "SLA Type" = "${slaType}" AND statusCategory != Done`;
 
       const response = await axios.post(
         `${config.baseUrl}/rest/api/3/search/jql`,
         {
           jql,
-          fields: ['key', 'summary', 'status', 'customfield_*'], // Hent alle custom fields
+          fields: ['key', 'customfield_10111', 'customfield_10145'],
           maxResults: 100
         },
         {
@@ -1209,69 +1123,61 @@ class JiraService {
         return { status: 'green', count: 0, breached: 0, warning: 0, criticalIssues: [] };
       }
 
-      // Analyser hver sag for SLA status
-      const now = new Date();
-      let breachedCount = 0;  // SLA overskredet
-      let warningCount = 0;   // Under 20% tid tilbage
-      let activeCount = 0;    // Aktive (ikke pausede) sager
-      const criticalIssues = []; // Liste over kritiske sager (gul/rød)
+      let breachedCount = 0;
+      let warningCount = 0;
+      let activeCount = 0;
+      const criticalIssues = [];
 
-      // 20% af SLA tid i millisekunder
-      const warningThresholdMs = slaHours * 0.2 * 60 * 60 * 1000;
+      // SLA grænse og warning threshold i ms
+      const slaGoalMs = slaHours * 60 * 60 * 1000;
+      const warningThresholdMs = slaGoalMs * 0.8; // Advar når 80% af tiden er brugt
 
       for (const issue of issues) {
-        const fields = issue.fields;
+        const ttr = issue.fields.customfield_10111;
+        const ongoing = ttr?.ongoingCycle;
 
-        // Find SLA Pauset felt (tjek om sagen er pauset)
-        // Custom field navne varierer - vi prøver forskellige muligheder
-        const slaPaused = this.findCustomFieldValue(fields, ['SLA Pauset', 'SLA Pause', 'Paused']);
-        const isPaused = slaPaused && (slaPaused === 'Pauset' || slaPaused === 'Pause' || slaPaused === true);
+        // Hvis SLA er pauset via Jira status (venter på kunde) ELLER manuelt felt, skip
+        // customfield_10145 = "SLA Pauset" (array med {value: "Pauset"})
+        const manualPause = issue.fields.customfield_10145;
+        const isManuallyPaused = Array.isArray(manualPause) && manualPause.some(v => v.value === 'Pauset');
+        if (ongoing?.paused || isManuallyPaused) {
+          continue;
+        }
 
-        if (isPaused) {
+        // Hvis ingen ongoing cycle, skip (sag uden SLA-data)
+        if (!ongoing) {
           continue;
         }
 
         activeCount++;
+        const elapsedMs = ongoing.elapsedTime?.millis || 0;
 
-        // Find SLA Due (Business) felt
-        const slaDue = this.findCustomFieldValue(fields, ['SLA Due (Business)', 'SLA Due', 'Due Date']);
-
-        if (!slaDue) {
-          continue;
-        }
-
-        const dueDate = new Date(slaDue);
-        const timeRemaining = dueDate.getTime() - now.getTime();
-
-        if (timeRemaining < 0) {
+        if (elapsedMs >= slaGoalMs) {
           // SLA overskredet
           breachedCount++;
           criticalIssues.push({
             key: issue.key,
             status: 'breached',
-            timeRemainingMs: timeRemaining // Negativ værdi
+            timeRemainingMs: slaGoalMs - elapsedMs // Negativ værdi
           });
-        } else if (timeRemaining < warningThresholdMs) {
-          // Under 20% tid tilbage
+        } else if (elapsedMs >= warningThresholdMs) {
+          // Over 80% af tiden brugt
           warningCount++;
           criticalIssues.push({
             key: issue.key,
             status: 'warning',
-            timeRemainingMs: timeRemaining
+            timeRemainingMs: slaGoalMs - elapsedMs
           });
         }
       }
 
-      // Sorter kritiske sager: rød før gul, derefter efter tid (mest kritisk først)
+      // Sorter: breached før warning, derefter mest kritisk først
       criticalIssues.sort((a, b) => {
-        // Først sorter efter status (breached før warning)
         if (a.status === 'breached' && b.status === 'warning') return -1;
         if (a.status === 'warning' && b.status === 'breached') return 1;
-        // Derefter sorter efter tid (laveste/mest negativ først)
         return a.timeRemainingMs - b.timeRemainingMs;
       });
 
-      // Bestem samlet status
       let status;
       if (breachedCount > 0) {
         status = 'red';
@@ -1291,45 +1197,8 @@ class JiraService {
 
     } catch (error) {
       console.error(`Fejl ved SLA check for ${slaType}:`, error.message);
-      if (error.response) {
-        console.error(`Response status: ${error.response.status}`);
-        console.error(`Response data:`, JSON.stringify(error.response.data, null, 2));
-      }
       return { status: 'unknown', count: 0, breached: 0, warning: 0, criticalIssues: [], error: error.message };
     }
-  }
-
-  /**
-   * Finder værdi for et custom field baseret på mulige navne
-   */
-  findCustomFieldValue(fields, possibleNames) {
-    // Først: Tjek om det er et kendt field navn
-    for (const name of possibleNames) {
-      if (fields[name] !== undefined) {
-        const val = fields[name];
-        // Hvis det er et objekt med 'value', returnér value
-        if (val && typeof val === 'object' && val.value) {
-          return val.value;
-        }
-        return val;
-      }
-    }
-
-    // Dernæst: Søg i alle customfield_XXXXX felter
-    for (const [key, value] of Object.entries(fields)) {
-      if (key.startsWith('customfield_') && value) {
-        // Tjek om dette felt matcher et af de søgte navne
-        // Custom fields kan have navnet i value.name eller som string value
-        if (typeof value === 'object') {
-          if (value.value) return value.value;
-          if (value.name && possibleNames.some(n => value.name.includes(n))) {
-            return value.value || value.name;
-          }
-        }
-      }
-    }
-
-    return null;
   }
 
   getMockSlaSummary() {
