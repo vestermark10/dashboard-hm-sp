@@ -492,7 +492,7 @@ export default function App()
               </div>
               <TrendChart
                 data={jiraSupport?.hallmonitor?.trendData ?? { weeks: [], currentWeek: [] }}
-                label="30 dages trend"
+                label="8 ugers trend"
               />
             </Card>
 
@@ -591,7 +591,7 @@ export default function App()
               </div>
               <TrendChart
                 data={jiraSupport?.switchpay?.trendData ?? { weeks: [], currentWeek: [] }}
-                label="30 dages trend"
+                label="8 ugers trend"
               />
             </Card>
 
@@ -620,7 +620,7 @@ export default function App()
           <div className="flex items-center justify-center gap-8 py-1.5">
             {celebrations.map((event, i) => (
               <div key={i} className="flex items-center gap-2 text-base font-semibold tracking-tight text-white">
-                {event.type === 'birthday' ? <DannebroFlag /> : <span>🚀</span>}
+                {event.type === 'birthday' ? <DannebroFlag /> : <RocketIcon />}
                 <span>{event.name}</span>
                 <span>
                   {event.date} – {event.type === 'birthday' ? 'Fødselsdag' : 'Jubilæum'}
@@ -903,7 +903,7 @@ function TrendChart({
 
   return (
     <div className="space-y-1">
-      <div className="text-[10px] text-slate-400 uppercase tracking-wide">{label}</div>
+      <div className="text-[10px] text-white uppercase tracking-wide">{label}</div>
 
       {/* Wrapper for SVG and overlay */}
       <div className="relative">
@@ -1355,7 +1355,7 @@ function OutagePopup({
   );
 }
 
-/* --- Dannebrog flag (SVG, da flag-emojis ikke virker på Windows) --- */
+/* --- Dannebrog flag (SVG, da flag-emojis ikke virker på Windows/Linux) --- */
 
 function DannebroFlag({ size = 20 }: { size?: number }) {
   const h = size * 0.7;
@@ -1364,6 +1364,21 @@ function DannebroFlag({ size = 20 }: { size?: number }) {
       <rect width="20" height="14" fill="#c8102e" />
       <rect x="6" y="0" width="2.5" height="14" fill="#fff" />
       <rect x="0" y="5.5" width="20" height="2.5" fill="#fff" />
+    </svg>
+  );
+}
+
+/* --- Raket (SVG, da emojis ikke virker på Windows/Linux) --- */
+
+function RocketIcon({ size = 20 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" className="inline-block">
+      <path d="M12 2C12 2 7 7 7 13c0 2.5 1 4 2.5 5l.5 3h4l.5-3c1.5-1 2.5-2.5 2.5-5 0-6-5-11-5-11z" fill="#e74c3c" />
+      <path d="M12 2C12 2 9 7 9 13c0 2 .7 3.3 1.8 4.2L11 21h2l.2-3.8c1.1-.9 1.8-2.2 1.8-4.2 0-6-3-11-3-11z" fill="#f39c12" />
+      <ellipse cx="12" cy="10" rx="1.5" ry="2" fill="#3498db" />
+      <path d="M7 13c-2 0-3.5 1.5-3.5 1.5L5 17l2-1v-3z" fill="#e74c3c" />
+      <path d="M17 13c2 0 3.5 1.5 3.5 1.5L19 17l-2-1v-3z" fill="#e74c3c" />
+      <path d="M10 21l-.5 2h5l-.5-2h-4z" fill="#f39c12" />
     </svg>
   );
 }
@@ -1464,7 +1479,7 @@ function RisingRockets() {
             animationDelay: `${rocket.delay}s`,
           }}
         >
-          🚀
+          <RocketIcon size={28} />
         </div>
       ))}
       <style>{`
