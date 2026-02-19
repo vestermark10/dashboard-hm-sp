@@ -884,8 +884,8 @@ class JiraService {
         this.getProductOrdersData('SwitchPay', this.spConfig, [
           'Modtaget',
           'I process',
-          'Leveret',
-          'I gang',
+          { label: 'Klar til Fakturering', jiraStatuses: ['Klar til Fakturering', 'Leveret'] },
+          { label: 'Skal onboardes', jiraStatuses: ['Skal onboardes', 'I gang'] },
           'Færdig'
         ])
       ]);
@@ -951,12 +951,16 @@ class JiraService {
       sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
 
       // Nu filtrer alle issues for hver status
+      // Stages kan være strings eller objekter med { label, jiraStatuses[] }
       const stageCounts = [];
       for (const stage of stages) {
-        let matchingIssues = allIssues.filter(i => i.fields.status.name === stage);
+        const label = typeof stage === 'string' ? stage : stage.label;
+        const jiraStatuses = typeof stage === 'string' ? [stage] : stage.jiraStatuses;
+
+        let matchingIssues = allIssues.filter(i => jiraStatuses.includes(i.fields.status.name));
 
         // For "Færdig" status, vis kun issues fra de sidste 7 dage
-        if (stage === 'Færdig') {
+        if (label === 'Færdig') {
           matchingIssues = matchingIssues.filter(i => {
             const resolved = i.fields.resolutiondate || i.fields.updated;
             if (!resolved) return false;
@@ -968,7 +972,7 @@ class JiraService {
         const count = new Set(matchingIssues.map(i => i.key).filter(Boolean)).size;
 
         stageCounts.push({
-          label: stage,
+          label,
           value: count
         });
       }
@@ -1035,20 +1039,20 @@ class JiraService {
     if (productName === 'HallMonitor') {
       return {
         stages: [
-          { label: "jobliste", value: 12 },
+          { label: "Jobliste", value: 12 },
           { label: "I gang", value: 7 },
-          { label: "klar til fakturering", value: 4 },
+          { label: "Klar til fakturering", value: 4 },
           { label: "Færdig", value: 25 }
         ]
       };
     } else {
       return {
         stages: [
-          { label: "modtaget", value: 8 },
-          { label: "i process", value: 5 },
-          { label: "Leveret", value: 3 },
-          { label: "Hardware faktureret", value: 2 },
-          { label: "færdig", value: 11 }
+          { label: "Modtaget", value: 8 },
+          { label: "I process", value: 5 },
+          { label: "Klar til Fakturering", value: 3 },
+          { label: "Skal onboardes", value: 2 },
+          { label: "Færdig", value: 11 }
         ]
       };
     }

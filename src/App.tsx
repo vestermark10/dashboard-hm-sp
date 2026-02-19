@@ -345,6 +345,15 @@ export default function App()
     return "text-red-400";
   };
 
+  // End-of-day celebration: grøn glow på individuelle KPI-bokse
+  const isAfter15 = new Date().getHours() >= 15;
+  const hmClosedWins = isAfter15 && (jiraSupport?.hallmonitor?.closedToday ?? 0) > (jiraSupport?.hallmonitor?.newToday ?? 0);
+  const hmResponseWins = isAfter15 && (jiraSupport?.hallmonitor?.timeToFirstResponseChange ?? 0) < 0;
+  const spClosedWins = isAfter15 && (jiraSupport?.switchpay?.closedToday ?? 0) > (jiraSupport?.switchpay?.newToday ?? 0);
+  const spResponseWins = isAfter15 && (jiraSupport?.switchpay?.timeToFirstResponseChange ?? 0) < 0;
+  const hmAnswerRateWins = isAfter15 && (hm?.answerRate ?? 0) > 85;
+  const spAnswerRateWins = isAfter15 && (sp?.answerRate ?? 0) > 85;
+
   const hmTotalAgents =
     hm?.agents.ready && hm?.agents.busy !== undefined && hm?.agents.other !== undefined
       ? hm.agents.ready + hm.agents.busy + hm.agents.other
@@ -458,6 +467,7 @@ export default function App()
                     label: "SVARPROCENT",
                     value: `${fmt(hm?.answerRate ?? 0)}%`,
                     highlight: true,
+                    celebrating: hmAnswerRateWins,
                   },
                   { label: "GNS VENT", value: fmt(hm?.avgWait ?? "00:00") },
                 ]}
@@ -469,7 +479,7 @@ export default function App()
               <div className="grid grid-cols-4 gap-2 mb-3">
                 <Kpi label="Åbne sager" value={fmt(jiraSupport?.hallmonitor?.openIssues ?? 0)} />
                 <Kpi label="Nye i dag" value={fmt(jiraSupport?.hallmonitor?.newToday ?? 0)} />
-                <Kpi label="Lukket i dag" value={fmt(jiraSupport?.hallmonitor?.closedToday ?? 0)} />
+                <Kpi label="Lukket i dag" value={fmt(jiraSupport?.hallmonitor?.closedToday ?? 0)} celebrating={hmClosedWins} />
                 <Kpi label="Kritiske (P1)" value={fmt(jiraSupport?.hallmonitor?.criticalP1 ?? 0)} />
               </div>
               <div className="grid grid-cols-2 gap-2 mb-3">
@@ -478,6 +488,7 @@ export default function App()
                   value={jiraSupport?.hallmonitor?.timeToFirstResponse ?? '–'}
                   changePercent={jiraSupport?.hallmonitor?.timeToFirstResponseChange}
                   lowerIsBetter
+                  celebrating={hmResponseWins}
                 />
                 <div className="rounded-xl border border-slate-800 bg-slate-950/80 px-2 py-1.5">
                   <div className="text-[9px] font-medium uppercase tracking-wide text-slate-400">
@@ -561,6 +572,7 @@ export default function App()
                     label: "SVARPROCENT",
                     value: `${fmt(sp?.answerRate ?? 0)}%`,
                     highlight: true,
+                    celebrating: spAnswerRateWins,
                   },
                   { label: "GNS VENT", value: fmt(sp?.avgWait ?? "00:00") },
                 ]}
@@ -572,7 +584,7 @@ export default function App()
               <div className="grid grid-cols-4 gap-2 mb-3">
                 <Kpi label="Åbne sager" value={fmt(jiraSupport?.switchpay?.openIssues ?? 0)} />
                 <Kpi label="Nye i dag" value={fmt(jiraSupport?.switchpay?.newToday ?? 0)} />
-                <Kpi label="Lukket i dag" value={fmt(jiraSupport?.switchpay?.closedToday ?? 0)} />
+                <Kpi label="Lukket i dag" value={fmt(jiraSupport?.switchpay?.closedToday ?? 0)} celebrating={spClosedWins} />
                 <Kpi label="Kritiske (P1)" value={fmt(jiraSupport?.switchpay?.criticalP1 ?? 0)} />
               </div>
               <div className="grid grid-cols-2 gap-2 mb-3">
@@ -581,6 +593,7 @@ export default function App()
                   value={jiraSupport?.switchpay?.timeToFirstResponse ?? '–'}
                   changePercent={jiraSupport?.switchpay?.timeToFirstResponseChange}
                   lowerIsBetter
+                  celebrating={spResponseWins}
                 />
                 <Kpi
                   label="Gennemsnitlig levetid"
@@ -636,6 +649,16 @@ export default function App()
           <span>Datakilder: Telefonsystem · Jira · e-conomic</span>
         </footer>
       </main>
+
+      <style>{`
+        @keyframes celebration-glow {
+          0%, 100% { box-shadow: 0 0 8px 2px rgba(52, 211, 153, 0.2); }
+          50% { box-shadow: 0 0 20px 4px rgba(52, 211, 153, 0.5); }
+        }
+        .animate-celebration-glow {
+          animation: celebration-glow 2.5s ease-in-out infinite;
+        }
+      `}</style>
     </div>
   );
 }
@@ -644,8 +667,8 @@ export default function App()
 
 function BrandHeader({ name }: { name: string }) {
   const logoSrc = name === "HallMonitor"
-    ? `${import.meta.env.BASE_URL}Logo-HallMonitor.png`
-    : `${import.meta.env.BASE_URL}SwitchPay-logo_250px.png`;
+    ? `${import.meta.env.BASE_URL}Logo-HallMonitor-white.png`
+    : `${import.meta.env.BASE_URL}SwitchPay-logo-white.png`;
 
   return (
     <div className="flex items-center justify-center">
@@ -722,6 +745,7 @@ type QueueStatItem = {
   label: string;
   value: string;
   highlight?: boolean;
+  celebrating?: boolean;
 };
 
 function QueueStatsRow({
@@ -759,22 +783,17 @@ function QueueStatsRow({
       {items.map((item) => (
         <div
           key={item.label}
-          className={`rounded-lg px-2 py-2 ${
-            item.highlight
-              ? "bg-slate-100"
-              : "bg-slate-950/70 border border-slate-800"
+          className={`rounded-lg px-2 py-2 bg-slate-950/70 ${
+            item.celebrating
+              ? "border border-emerald-400 animate-celebration-glow"
+              : "border border-slate-800"
           }`}
         >
-          <div
-            className={`text-[0.6rem] uppercase tracking-wide ${
-              item.highlight ? "text-slate-700" : "text-white"
-            }`}
-          >
+          <div className="text-[0.6rem] uppercase tracking-wide text-white flex items-center justify-center gap-1">
             {item.label}
+            {item.celebrating && <span className="inline-block h-1.5 w-1.5 rounded-full bg-emerald-400" />}
           </div>
-          <div className={`text-sm font-semibold ${
-            item.highlight ? "text-slate-900" : "text-white"
-          }`}>{item.value}</div>
+          <div className="text-sm font-semibold text-white">{item.value}</div>
         </div>
       ))}
     </div>
@@ -788,11 +807,13 @@ function Kpi({
   value,
   changePercent,
   lowerIsBetter,
+  celebrating,
 }: {
   label: string;
   value: string;
   changePercent?: number | null;
   lowerIsBetter?: boolean;
+  celebrating?: boolean;
 }) {
   // For tid-metrics: lavere = bedre (grøn), højere = dårligere (rød)
   const showChange = changePercent !== undefined && changePercent !== null;
@@ -801,9 +822,14 @@ function Kpi({
   const changeColor = isImprovement ? 'text-emerald-400' : 'text-red-400';
 
   return (
-    <div className="rounded-xl border border-slate-800 bg-slate-950/80 px-2 py-1.5">
-      <div className="text-[9px] font-medium uppercase tracking-wide text-white">
+    <div className={`rounded-xl px-2 py-1.5 ${
+      celebrating
+        ? "border border-emerald-400 bg-slate-950/80 animate-celebration-glow"
+        : "border border-slate-800 bg-slate-950/80"
+    }`}>
+      <div className="text-[9px] font-medium uppercase tracking-wide text-white flex items-center gap-1">
         {label}
+        {celebrating && <span className="inline-block h-1.5 w-1.5 rounded-full bg-emerald-400" />}
       </div>
       <div className="mt-0.5 flex items-baseline gap-1.5">
         <span className="text-xl font-semibold text-white">{value}</span>
@@ -1090,26 +1116,38 @@ function TrendChart({
 
 /* --- Jira Orders – søjlediagram --- */
 
+// Farver mappet til stage-koncept så HM og SP matcher visuelt
+const STAGE_COLOR_MAP: Record<string, string> = {
+  // Indgang (nye/modtagne)
+  'jobliste':             'bg-cyan-500',
+  'modtaget':             'bg-cyan-500',
+  // I arbejde
+  'i gang':               'bg-emerald-400',
+  'i process':            'bg-emerald-400',
+  // Klar / leveret
+  'klar til fakturering': 'bg-amber-400',
+  // Specielle
+  'skal onboardes':       'bg-violet-500',
+  // Afsluttet
+  'færdig':               'bg-sky-400',
+};
+const FALLBACK_COLORS = ['bg-cyan-500', 'bg-emerald-400', 'bg-amber-400', 'bg-violet-500', 'bg-rose-400'];
+
 function PipelineColumns({
   stages,
 }: {
   stages: { label: string; value: number }[];
 }) {
   const max = stages.reduce((m, s) => (s.value > m ? s.value : m), 1);
-  const maxHeight = 100; // px - reduceret fra 150px
+  const maxHeight = 100;
 
   return (
     <div className="space-y-2">
-      {/* Søjler */}
       <div className="flex h-32 items-end justify-evenly">
         {stages.map((s, i) => {
           const ratio = s.value / max || 0;
-          const barHeight = 20 + ratio * (maxHeight - 20); // min 20px, max 100px
-
-          let colorClass = "bg-cyan-500";
-          if (i === 1) colorClass = "bg-emerald-400";
-          if (i === 2) colorClass = "bg-amber-400";
-          if (i === 3) colorClass = "bg-violet-500";
+          const barHeight = 20 + ratio * (maxHeight - 20);
+          const colorClass = STAGE_COLOR_MAP[s.label.toLowerCase()] ?? FALLBACK_COLORS[i % FALLBACK_COLORS.length];
 
           return (
             <div key={s.label} className="flex flex-col items-center gap-1">
@@ -1279,7 +1317,7 @@ function OutagePopup({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
       <div
-        className="w-[33vw] h-[33vh] min-w-[400px] min-h-[300px] rounded-2xl border-2 border-red-500 bg-red-950/95 p-6 shadow-2xl shadow-red-900/50 overflow-auto flex flex-col"
+        className="w-[60vw] max-h-[85vh] min-w-[400px] rounded-2xl border-2 border-red-500 bg-red-950/95 p-6 shadow-2xl shadow-red-900/50 flex flex-col"
       >
         {/* Header */}
         <div className="flex items-center justify-between mb-4">
@@ -1297,12 +1335,12 @@ function OutagePopup({
 
         {/* VippsMobilePay */}
         {vippsOutage && (
-          <div className="mb-4 p-4 rounded-lg bg-red-900/50 border border-red-700">
+          <div className="mb-3 p-4 rounded-lg bg-red-900/50 border border-red-700">
             <h3 className="text-lg font-semibold text-white mb-2">VippsMobilePay</h3>
             {status.vippsMobilePay.incidents.map((incident) => (
               <div key={incident.id} className="mb-2">
                 <p className="text-white font-medium">{incident.title}</p>
-                <p className="text-white text-sm mt-1">{incident.content}</p>
+                <p className="text-white text-sm mt-1 line-clamp-3">{incident.content}</p>
                 <p className="text-white/80 text-xs mt-1">
                   Status: {incident.status} · Opdateret: {new Date(incident.updated).toLocaleString('da-DK')}
                 </p>
@@ -1313,7 +1351,7 @@ function OutagePopup({
 
         {/* Payter */}
         {payterOutage && (
-          <div className="mb-4 p-4 rounded-lg bg-red-900/50 border border-red-700">
+          <div className="mb-3 p-4 rounded-lg bg-red-900/50 border border-red-700">
             <h3 className="text-lg font-semibold text-white mb-2">Payter</h3>
             {status.payter.components.myPayter && !status.payter.components.myPayter.isOperational && (
               <p className="text-white">
@@ -1332,12 +1370,12 @@ function OutagePopup({
 
         {/* Elavon */}
         {elavonOutage && (
-          <div className="mb-4 p-4 rounded-lg bg-red-900/50 border border-red-700">
+          <div className="mb-3 p-4 rounded-lg bg-red-900/50 border border-red-700">
             <h3 className="text-lg font-semibold text-white mb-2">Elavon</h3>
             {status.elavon.incidents.map((incident) => (
               <div key={incident.id} className="mb-2">
                 <p className="text-white font-medium">{incident.title}</p>
-                <p className="text-white text-sm mt-1">{incident.content}</p>
+                <p className="text-white text-sm mt-1 line-clamp-3">{incident.content}</p>
                 <p className="text-white/80 text-xs mt-1">
                   Status: {incident.status} · Opdateret: {new Date(incident.updated).toLocaleString('da-DK')}
                 </p>
