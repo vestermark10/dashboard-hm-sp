@@ -484,7 +484,7 @@ export default function App()
               </div>
               <div className="grid grid-cols-2 gap-2 mb-3">
                 <Kpi
-                  label="Tid til første svar / lukket"
+                  label="Tid til første svar / lukket (Median)"
                   value={jiraSupport?.hallmonitor?.timeToFirstResponse ?? '–'}
                   changePercent={jiraSupport?.hallmonitor?.timeToFirstResponseChange}
                   lowerIsBetter
@@ -589,7 +589,7 @@ export default function App()
               </div>
               <div className="grid grid-cols-2 gap-2 mb-3">
                 <Kpi
-                  label="Tid til første svar / lukket"
+                  label="Tid til første svar / lukket (Median)"
                   value={jiraSupport?.switchpay?.timeToFirstResponse ?? '–'}
                   changePercent={jiraSupport?.switchpay?.timeToFirstResponseChange}
                   lowerIsBetter
