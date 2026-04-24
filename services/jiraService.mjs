@@ -568,10 +568,10 @@ class JiraService {
         // Stop hvis vi er i fremtiden
         if (date > today) break;
 
-        const dateStr = date.toISOString().split('T')[0];
+        const dateStr = this.formatLocalDate(date);
         const nextDate = new Date(date);
         nextDate.setDate(nextDate.getDate() + 1);
-        const nextDateStr = nextDate.toISOString().split('T')[0];
+        const nextDateStr = this.formatLocalDate(nextDate);
 
         const createdJql = `project = ${config.supportProjectKey} AND created >= "${dateStr} 00:00" AND created < "${nextDateStr} 00:00"`;
         const resolvedJql = `project = ${config.supportProjectKey} AND statusCategory = Done AND resolutiondate >= "${dateStr} 00:00" AND resolutiondate < "${nextDateStr} 00:00"`;
@@ -599,8 +599,8 @@ class JiraService {
         const weekEnd = new Date(weekStart);
         weekEnd.setDate(weekEnd.getDate() + 7);
 
-        const weekStartStr = weekStart.toISOString().split('T')[0];
-        const weekEndStr = weekEnd.toISOString().split('T')[0];
+        const weekStartStr = this.formatLocalDate(weekStart);
+        const weekEndStr = this.formatLocalDate(weekEnd);
 
         const createdJql = `project = ${config.supportProjectKey} AND created >= "${weekStartStr} 00:00" AND created < "${weekEndStr} 00:00"`;
         const resolvedJql = `project = ${config.supportProjectKey} AND statusCategory = Done AND resolutiondate >= "${weekStartStr} 00:00" AND resolutiondate < "${weekEndStr} 00:00"`;
@@ -653,6 +653,13 @@ class JiraService {
       }
       return this.getMock8WeeksTrendData();
     }
+  }
+
+  formatLocalDate(date) {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
   }
 
   /**
