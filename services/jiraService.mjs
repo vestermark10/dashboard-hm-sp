@@ -361,9 +361,9 @@ class JiraService {
    * Ét kald der dækker TTFR, SLA Compliance og Average Lifetime.
    */
   async fetchResolvedIssues30Days(config) {
-    const thirtyDaysAgo = new Date();
-    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-    const dateStr = thirtyDaysAgo.toISOString().split('T')[0];
+    const now = new Date();
+    const startOfLastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    const dateStr = startOfLastMonth.toISOString().split('T')[0];
 
     const jql = `project = ${config.supportProjectKey} AND statusCategory = Done AND resolutiondate >= "${dateStr} 00:00"`;
     const fields = ['key', 'created', 'resolutiondate', config.ttfrField, 'customfield_10111'];
@@ -395,8 +395,9 @@ class JiraService {
    */
   calculateTimeToFirstResponse(config, resolvedIssues) {
     try {
-      const fifteenDaysAgo = new Date();
-      fifteenDaysAgo.setDate(fifteenDaysAgo.getDate() - 15);
+      const now = new Date();
+      const startOfThisMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+      const startOfLastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
 
       const recentTimes = [];
       const previousTimes = [];
@@ -408,9 +409,9 @@ class JiraService {
         if (completedCycle?.elapsedTime?.millis) {
           const elapsed = completedCycle.elapsedTime.millis;
           const resolvedDate = issue.fields.resolutiondate ? new Date(issue.fields.resolutiondate) : null;
-          const isRecent = resolvedDate && resolvedDate >= fifteenDaysAgo;
-
-          (isRecent ? recentTimes : previousTimes).push(elapsed);
+          if (!resolvedDate) continue;
+          if (resolvedDate >= startOfThisMonth) recentTimes.push(elapsed);
+          else if (resolvedDate >= startOfLastMonth) previousTimes.push(elapsed);
         }
       }
 
@@ -474,8 +475,9 @@ class JiraService {
    */
   calculateAverageLifetime(resolvedIssues) {
     try {
-      const fifteenDaysAgo = new Date();
-      fifteenDaysAgo.setDate(fifteenDaysAgo.getDate() - 15);
+      const now = new Date();
+      const startOfThisMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+      const startOfLastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
       const recentLifetimes = [];
       const previousLifetimes = [];
 
@@ -486,8 +488,8 @@ class JiraService {
           const lifetime = this.calculateBusinessHours(created, resolved);
 
           if (lifetime > 0) {
-            const isRecent = resolved >= fifteenDaysAgo;
-            (isRecent ? recentLifetimes : previousLifetimes).push(lifetime);
+            if (resolved >= startOfThisMonth) recentLifetimes.push(lifetime);
+            else if (resolved >= startOfLastMonth) previousLifetimes.push(lifetime);
           }
         }
       }
