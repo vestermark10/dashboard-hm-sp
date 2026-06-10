@@ -426,7 +426,7 @@ class JiraService {
         : sorted[mid];
 
       let changePercent = null;
-      if (recentTimes.length > 0 && previousTimes.length > 0) {
+      if (recentTimes.length >= 5 && previousTimes.length >= 5) {
         const recentMedian = this.median(recentTimes);
         const prevMedian = this.median(previousTimes);
         if (prevMedian > 0) {
@@ -500,7 +500,7 @@ class JiraService {
       const avgLifetime = allLifetimes.reduce((a, b) => a + b, 0) / allLifetimes.length;
 
       let changePercent = null;
-      if (recentLifetimes.length > 0 && previousLifetimes.length > 0) {
+      if (recentLifetimes.length >= 5 && previousLifetimes.length >= 5) {
         const recentAvg = recentLifetimes.reduce((a, b) => a + b, 0) / recentLifetimes.length;
         const previousAvg = previousLifetimes.reduce((a, b) => a + b, 0) / previousLifetimes.length;
         changePercent = Math.round(((recentAvg - previousAvg) / previousAvg) * 100);
