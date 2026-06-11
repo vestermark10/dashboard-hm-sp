@@ -225,9 +225,12 @@ class JiraService {
       // Beregn metrics
       const metrics = this.calculateMetrics(issues, totalOpenIssues, closedToday, newToday);
 
-      // Hent resolved issues én gang og beregn alle metrics fra samme dataset
-      const resolvedIssues = await this.fetchResolvedIssues30Days(config);
-      const timeToFirstResponse = this.calculateTimeToFirstResponse(config, resolvedIssues);
+      // Hent resolved issues og alle TTFR-issues parallelt
+      const [resolvedIssues, allIssuesForTTFR] = await Promise.all([
+        this.fetchResolvedIssues30Days(config),
+        this.fetchAllIssuesForTTFR(config),
+      ]);
+      const timeToFirstResponse = this.calculateTimeToFirstResponse(config, allIssuesForTTFR);
       const slaComplianceOrLifetime = productName === 'HallMonitor'
         ? this.calculateSlaCompliance(resolvedIssues)
         : this.calculateAverageLifetime(resolvedIssues);
@@ -360,6 +363,36 @@ class JiraService {
    * Henter alle resolved issues fra de sidste 30 dage med alle nødvendige felter.
    * Ét kald der dækker TTFR, SLA Compliance og Average Lifetime.
    */
+  async fetchAllIssuesForTTFR(config) {
+    const now = new Date();
+    const startOfLastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    const dateStr = startOfLastMonth.toISOString().split('T')[0];
+
+    const jql = `project = ${config.supportProjectKey} AND created >= "${dateStr} 00:00"`;
+    const fields = ['key', config.ttfrField];
+
+    const response = await axios.post(
+      `${config.baseUrl}/rest/api/3/search/jql`,
+      { jql, fields, maxResults: 100 },
+      { headers: this.getAuthHeaders(config), timeout: 15000 }
+    );
+
+    let allIssues = [...response.data.issues];
+    let nextToken = response.data.nextPageToken;
+
+    while (nextToken) {
+      const pageResp = await axios.post(
+        `${config.baseUrl}/rest/api/3/search/jql`,
+        { jql, fields, maxResults: 100, nextPageToken: nextToken },
+        { headers: this.getAuthHeaders(config), timeout: 15000 }
+      );
+      allIssues.push(...pageResp.data.issues);
+      nextToken = pageResp.data.nextPageToken;
+    }
+
+    return allIssues;
+  }
+
   async fetchResolvedIssues30Days(config) {
     const now = new Date();
     const startOfLastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
@@ -406,12 +439,12 @@ class JiraService {
         const slaField = issue.fields[config.ttfrField];
         const completedCycle = slaField?.completedCycles?.[0];
 
-        if (completedCycle?.elapsedTime?.millis) {
+        if (completedCycle?.elapsedTime?.millis && completedCycle?.stopTime?.epochMillis) {
           const elapsed = completedCycle.elapsedTime.millis;
-          const resolvedDate = issue.fields.resolutiondate ? new Date(issue.fields.resolutiondate) : null;
-          if (!resolvedDate) continue;
-          if (resolvedDate >= startOfThisMonth) recentTimes.push(elapsed);
-          else if (resolvedDate >= startOfLastMonth) previousTimes.push(elapsed);
+
+          const responseDate = new Date(completedCycle.stopTime.epochMillis);
+          if (responseDate >= startOfThisMonth) recentTimes.push(elapsed);
+          else if (responseDate >= startOfLastMonth) previousTimes.push(elapsed);
         }
       }
 
