@@ -441,6 +441,7 @@ class JiraService {
 
         if (completedCycle?.elapsedTime?.millis && completedCycle?.stopTime?.epochMillis) {
           const elapsed = completedCycle.elapsedTime.millis;
+
           const responseDate = new Date(completedCycle.stopTime.epochMillis);
           if (responseDate >= startOfThisMonth) recentTimes.push(elapsed);
           else if (responseDate >= startOfLastMonth) previousTimes.push(elapsed);
