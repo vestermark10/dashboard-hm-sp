@@ -957,7 +957,7 @@ class JiraService {
         `${config.baseUrl}/rest/api/3/search/jql`,
         {
           jql: allIssuesJql,
-          fields: ['key', 'status', 'resolutiondate', 'updated'],
+          fields: ['key', 'status', 'resolutiondate', 'updated', 'parent'],
           maxResults: 100
         },
         {
@@ -975,7 +975,7 @@ class JiraService {
           `${config.baseUrl}/rest/api/3/search/jql`,
           {
             jql: allIssuesJql,
-            fields: ['key', 'status', 'resolutiondate', 'updated'],
+            fields: ['key', 'status', 'resolutiondate', 'updated', 'parent'],
             maxResults: 100,
             nextPageToken
           },
@@ -987,6 +987,10 @@ class JiraService {
         allIssues = allIssues.concat(pageResponse.data.issues);
         nextPageToken = pageResponse.data.nextPageToken;
       }
+
+      // Ekskluder child-issues (opgaver med en parent, fx subtasks under en ordre)
+      // - kun selve ordre-issues skal indgå i pipeline-optællingen.
+      allIssues = allIssues.filter(i => !i.fields.parent);
 
       // Beregn datoen for 7 dage siden
       const sevenDaysAgo = new Date();
