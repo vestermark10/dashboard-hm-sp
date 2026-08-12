@@ -36,6 +36,18 @@ class JiraService {
       data: {},
       lastUpdated: null
     };
+
+    // Cache for orders pipeline (undgår fuldt, ubegrænset opslag af hele Orders-projektet
+    // ved hver poll fra hver åbne dashboard-fane)
+    this.ordersCache = {
+      data: {},
+      lastFetched: {}
+    };
+    this.ORDERS_CACHE_TTL_MS = 2 * 60 * 1000; // 2 minutter
+
+    // IANA tidszone dashboardet regner "i dag"/arbejdstid ud fra - bruges i stedet for et
+    // hardcodet UTC-offset, så beregningerne er korrekte i både CET og CEST (sommertid).
+    this.COPENHAGEN_TZ = 'Europe/Copenhagen';
   }
 
   getAuthHeaders(config) {
@@ -45,6 +57,68 @@ class JiraService {
       'Accept': 'application/json',
       'Content-Type': 'application/json'
     };
+  }
+
+  /**
+   * Finder UTC-offset (i minutter) for Europe/Copenhagen på et givent tidspunkt.
+   * Skifter automatisk mellem CET (+60) og CEST (+120) - i modsætning til et fast offset.
+   */
+  getCopenhagenOffsetMinutes(date) {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: this.COPENHAGEN_TZ,
+      timeZoneName: 'shortOffset'
+    }).formatToParts(date);
+    const offsetPart = parts.find(p => p.type === 'timeZoneName')?.value || 'GMT+1';
+    const match = offsetPart.match(/GMT([+-]\d+)/);
+    return (match ? parseInt(match[1], 10) : 1) * 60;
+  }
+
+  /**
+   * Returnerer UTC-tidspunktet for lokal midnat (00:00) i Europe/Copenhagen for den
+   * kalenderdag `date` falder i. Erstatter et tidligere hardcodet "+1 time for CET",
+   * som var en time forkert i sommertid (CEST = UTC+2, ikke UTC+1).
+   */
+  copenhagenMidnightUtc(date) {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: this.COPENHAGEN_TZ,
+      year: 'numeric', month: '2-digit', day: '2-digit'
+    }).formatToParts(date).reduce((acc, p) => { acc[p.type] = p.value; return acc; }, {});
+
+    const utcGuess = new Date(Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day)));
+    const offsetMinutes = this.getCopenhagenOffsetMinutes(utcGuess);
+    return new Date(utcGuess.getTime() - offsetMinutes * 60 * 1000);
+  }
+
+  /**
+   * Formaterer et UTC-tidspunkt som "YYYY-MM-DD HH:MM" til brug i JQL-datofiltre.
+   */
+  formatUtcForJql(date) {
+    const year = date.getUTCFullYear();
+    const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+    const day = String(date.getUTCDate()).padStart(2, '0');
+    const hour = String(date.getUTCHours()).padStart(2, '0');
+    const minute = String(date.getUTCMinutes()).padStart(2, '0');
+    return `${year}-${month}-${day} ${hour}:${minute}`;
+  }
+
+  /**
+   * Konverterer et tidspunkt til et Date-objekt hvis UTC-felter (getUTCDay, getUTCHours osv.)
+   * repræsenterer den lokale Europe/Copenhagen ur-tid. Bruges til arbejdstidsberegning, så den
+   * er korrekt uanset hvilken tidszone serverprocessen selv kører i.
+   */
+  toCopenhagenWallClock(date) {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: this.COPENHAGEN_TZ,
+      hour12: false,
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit'
+    }).formatToParts(date).reduce((acc, p) => { acc[p.type] = p.value; return acc; }, {});
+
+    const hour = parts.hour === '24' ? '0' : parts.hour; // nogle locale-outputs bruger "24" for midnat
+    return new Date(Date.UTC(
+      Number(parts.year), Number(parts.month) - 1, Number(parts.day),
+      Number(hour), Number(parts.minute), Number(parts.second)
+    ));
   }
 
   /**
@@ -77,20 +151,8 @@ class JiraService {
       // JQL query til at finde åbne sager (bruger statusCategory for at ekskludere alle lukkede)
       const jql = `project = ${config.supportProjectKey} AND statusCategory != Done ORDER BY created DESC`;
 
-      // Hent total count (separat query)
-      const countResponse = await axios.post(
-        `${config.baseUrl}/rest/api/3/search/jql`,
-        {
-          jql: `project = ${config.supportProjectKey} AND statusCategory != Done`,
-          maxResults: 1
-        },
-        {
-          headers: this.getAuthHeaders(config),
-          timeout: 10000
-        }
-      );
-
-      // Hent actual issues
+      // Hent issues (bruges både til visning af top 4 og til at tælle totalt antal åbne sager -
+      // tidligere lavede vi et helt separat, dublerende paginerings-opslag bare for at tælle)
       const response = await axios.post(
         `${config.baseUrl}/rest/api/3/search/jql`,
         {
@@ -106,15 +168,15 @@ class JiraService {
 
       const issues = response.data.issues;
 
-      // Tæl total open issues ved at fjerne duplicates
+      // Tæl total open issues ved at fjerne duplicates - fortsæt blot samme paginering
       const issueKeys = new Set(issues.map(i => i.key).filter(Boolean));
-      let nextPageToken = countResponse.data.nextPageToken;
+      let nextPageToken = response.data.nextPageToken;
 
       while (nextPageToken) {
         const pageResponse = await axios.post(
           `${config.baseUrl}/rest/api/3/search/jql`,
           {
-            jql: `project = ${config.supportProjectKey} AND statusCategory != Done`,
+            jql,
             fields: ['key'],
             maxResults: 100,
             nextPageToken
@@ -132,27 +194,17 @@ class JiraService {
 
       const totalOpenIssues = issueKeys.size;
 
-      // Hent issues lukket i dag for at tælle closedToday (brug lokal dansk tid CET = UTC+1)
+      // Hent issues lukket i dag for at tælle closedToday (dansk kalenderdag, Europe/Copenhagen)
       const now = new Date();
 
-      // Beregn dagens dato i CET (UTC+1)
-      const cetNow = new Date(now.getTime() + 60 * 60 * 1000); // Tilføj 1 time for CET
-      const cetYear = cetNow.getUTCFullYear();
-      const cetMonth = String(cetNow.getUTCMonth() + 1).padStart(2, '0');
-      const cetDay = String(cetNow.getUTCDate()).padStart(2, '0');
+      // Grænserne for "i dag" beregnes særskilt for i dag og i morgen (i stedet for et fast
+      // +24 timer), så det også er korrekt på de to dage om året hvor sommertid skifter.
+      const startOfTodayUtc = this.copenhagenMidnightUtc(now);
+      const startOfTomorrowUtc = this.copenhagenMidnightUtc(new Date(now.getTime() + 24 * 60 * 60 * 1000));
+      const todayBoundary = this.formatUtcForJql(startOfTodayUtc);
+      const tomorrowBoundary = this.formatUtcForJql(startOfTomorrowUtc);
 
-      const todayStr = `${cetYear}-${cetMonth}-${cetDay}`;
-
-      // Beregn igår for resolutiondate query (samme logik som created)
-      const cetYesterdayRes = new Date(cetNow.getTime() - 24 * 60 * 60 * 1000);
-      const yesterdayYearRes = cetYesterdayRes.getUTCFullYear();
-      const yesterdayMonthRes = String(cetYesterdayRes.getUTCMonth() + 1).padStart(2, '0');
-      const yesterdayDayRes = String(cetYesterdayRes.getUTCDate()).padStart(2, '0');
-      const yesterdayStrRes = `${yesterdayYearRes}-${yesterdayMonthRes}-${yesterdayDayRes}`;
-
-      // VIGTIGT: Jira JQL bruger UTC tid, men vi vil have CET tid (UTC+1)
-      // Så vi skal query for "igår 23:00 UTC til i dag 23:00 UTC" for at få "i dag 00:00 CET til i morgen 00:00 CET"
-      const closedTodayJql = `project = ${config.supportProjectKey} AND statusCategory = Done AND resolutiondate >= "${yesterdayStrRes} 23:00" AND resolutiondate < "${todayStr} 23:00"`;
+      const closedTodayJql = `project = ${config.supportProjectKey} AND statusCategory = Done AND resolutiondate >= "${todayBoundary}" AND resolutiondate < "${tomorrowBoundary}"`;
       const closedTodayResponse = await axios.post(
         `${config.baseUrl}/rest/api/3/search/jql`,
         {
@@ -191,15 +243,7 @@ class JiraService {
       const closedToday = closedTodayKeys.size;
 
       // Hent issues oprettet i dag for at tælle newToday (inkluderer både åbne og lukkede)
-      // VIGTIGT: Jira JQL bruger UTC tid, men vi vil have CET tid (UTC+1)
-      // Så vi skal query for "igår 23:00 UTC til i dag 23:00 UTC" for at få "i dag 00:00 CET til i morgen 00:00 CET"
-      const cetYesterday = new Date(cetNow.getTime() - 24 * 60 * 60 * 1000);
-      const yesterdayYear = cetYesterday.getUTCFullYear();
-      const yesterdayMonth = String(cetYesterday.getUTCMonth() + 1).padStart(2, '0');
-      const yesterdayDay = String(cetYesterday.getUTCDate()).padStart(2, '0');
-      const yesterdayStr = `${yesterdayYear}-${yesterdayMonth}-${yesterdayDay}`;
-
-      const createdTodayJql = `project = ${config.supportProjectKey} AND created >= "${yesterdayStr} 23:00" AND created < "${todayStr} 23:00"`;
+      const createdTodayJql = `project = ${config.supportProjectKey} AND created >= "${todayBoundary}" AND created < "${tomorrowBoundary}"`;
       const createdTodayResponse = await axios.post(
         `${config.baseUrl}/rest/api/3/search/jql`,
         { jql: createdTodayJql, fields: ['key', 'created'], maxResults: 100 },
@@ -320,22 +364,24 @@ class JiraService {
     const WORK_START_HOUR = 9;  // 09:00
     const WORK_END_HOUR = 15;   // 15:00
 
-    let current = new Date(startDate);
-    const end = new Date(endDate);
+    // Konverter til "Copenhagen ur-tid" repræsenteret som UTC-felter, så beregningen er
+    // korrekt uanset serverprocessens egen tidszone (fx hvis den kører med TZ=UTC).
+    let current = this.toCopenhagenWallClock(startDate);
+    const end = this.toCopenhagenWallClock(endDate);
     let businessMilliseconds = 0;
 
     // Loop through each day
     while (current < end) {
-      const dayOfWeek = current.getDay(); // 0 = søndag, 6 = lørdag
+      const dayOfWeek = current.getUTCDay(); // 0 = søndag, 6 = lørdag
 
       // Skip weekends
       if (dayOfWeek !== 0 && dayOfWeek !== 6) {
         // Define work hours for this day
         const workStart = new Date(current);
-        workStart.setHours(WORK_START_HOUR, 0, 0, 0);
+        workStart.setUTCHours(WORK_START_HOUR, 0, 0, 0);
 
         const workEnd = new Date(current);
-        workEnd.setHours(WORK_END_HOUR, 0, 0, 0);
+        workEnd.setUTCHours(WORK_END_HOUR, 0, 0, 0);
 
         // Calculate overlap between [current, end] and [workStart, workEnd]
         const overlapStart = current > workStart ? current : workStart;
@@ -347,8 +393,8 @@ class JiraService {
       }
 
       // Move to next day at midnight
-      current.setDate(current.getDate() + 1);
-      current.setHours(0, 0, 0, 0);
+      current.setUTCDate(current.getUTCDate() + 1);
+      current.setUTCHours(0, 0, 0, 0);
 
       // If we've passed the end date, stop
       if (current >= end) {
@@ -942,6 +988,14 @@ class JiraService {
   }
 
   async getProductOrdersData(productName, config, stages) {
+    // Cache resultatet kortvarigt - uden dette laver hver åbne dashboard-fane et fuldt,
+    // ubegrænset opslag af hele Orders-projektet hver gang den poller (hvert 5. minut).
+    const cachedEntry = this.ordersCache.data[productName];
+    const lastFetched = this.ordersCache.lastFetched[productName];
+    if (cachedEntry && lastFetched && (Date.now() - lastFetched) < this.ORDERS_CACHE_TTL_MS) {
+      return cachedEntry;
+    }
+
     try {
       // Check hvis credentials mangler
       if (!config.baseUrl || !config.email || !config.apiToken) {
@@ -1005,13 +1059,15 @@ class JiraService {
 
         let matchingIssues = allIssues.filter(i => jiraStatuses.includes(i.fields.status.name));
 
-        // For "Færdig" status, vis kun issues fra de sidste 7 dage
+        // For "Færdig" status, vis kun issues fra de sidste 7 dage.
+        // Bruger udelukkende resolutiondate - "updated" ændrer sig ved enhver redigering
+        // (fx en kommentar), hvilket ville få en sag til at blive ved med at tælle som
+        // "nyligt afsluttet" hver gang nogen rører den.
         if (label === 'Færdig') {
           matchingIssues = matchingIssues.filter(i => {
-            const resolved = i.fields.resolutiondate || i.fields.updated;
+            const resolved = i.fields.resolutiondate;
             if (!resolved) return false;
-            const resolvedDate = new Date(resolved);
-            return resolvedDate >= sevenDaysAgo;
+            return new Date(resolved) >= sevenDaysAgo;
           });
         }
 
@@ -1023,7 +1079,11 @@ class JiraService {
         });
       }
 
-      return { stages: stageCounts };
+      const result = { stages: stageCounts };
+      this.ordersCache.data[productName] = result;
+      this.ordersCache.lastFetched[productName] = Date.now();
+
+      return result;
 
     } catch (error) {
       console.error(`Fejl ved hentning af ${productName} orders data:`, error.message);
@@ -1033,7 +1093,8 @@ class JiraService {
         console.error(`Response status: ${error.response.status}`);
         console.error(`Response data:`, JSON.stringify(error.response.data, null, 2));
       }
-      return this.getSingleProductMockOrdersData(productName);
+      // Foretræk stale cache frem for mockdata hvis vi har en - mere retvisende end mock-tal
+      return cachedEntry || this.getSingleProductMockOrdersData(productName);
     }
   }
 

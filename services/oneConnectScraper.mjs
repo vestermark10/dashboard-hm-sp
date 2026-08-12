@@ -88,14 +88,22 @@ class OneConnectScraper {
      */
     async scrapeQueueStats() {
         try {
-            // Luk gammel browser først hvis den findes
-            if (this.browser) {
-                await this.browser.close();
-                this.browser = null;
-                this.page = null;
+            // Genbrug eksisterende browser/page hvis den stadig lever - relancering af en hel
+            // headless Chromium ved hvert scrape (op til ~17 gange/dag) er unødvendigt dyrt.
+            // Luk og genstart kun hvis browseren/siden er død (fx crashet mellem to scrapes).
+            const browserIsHealthy = this.browser?.isConnected() && this.page && !this.page.isClosed();
+            if (!browserIsHealthy) {
+                if (this.browser) {
+                    try {
+                        await this.browser.close();
+                    } catch (closeError) {
+                        console.warn('OneConnect: Fejl ved lukning af gammel browser:', closeError.message);
+                    }
+                    this.browser = null;
+                    this.page = null;
+                }
+                await this.initBrowser();
             }
-
-            await this.initBrowser();
 
             // Start ved at gå direkte til dashboard - det vil redirecte til login hvis nødvendigt
             console.log('OneConnect: Navigerer til dashboard...');
@@ -264,8 +272,20 @@ class OneConnectScraper {
                         const allText = widget.innerText;
                         const timeMatches = allText.match(/\d{1,2}:\d{2}/g) || [];
 
+                        // Afvis implausible "ventetider" (fx et klokkeslæt der tilfældigt matcher
+                        // MM:SS-mønsteret) - en opkalds-ventetid over en time er ikke realistisk her.
+                        const MAX_PLAUSIBLE_WAIT_MINUTES = 59;
+                        const isPlausibleWaitTime = (value) => {
+                            const match = value.match(/^(\d{1,2}):(\d{2})$/);
+                            if (!match) return false;
+                            const minutes = parseInt(match[1], 10);
+                            const seconds = parseInt(match[2], 10);
+                            return minutes <= MAX_PLAUSIBLE_WAIT_MINUTES && seconds <= 59;
+                        };
+                        const plausibleMatches = timeMatches.filter(isPlausibleWaitTime);
+
                         // Filtrer de tidsværdier vi allerede har fundet fra tabs
-                        const remainingTimes = timeMatches.filter(t => t !== '00:00' || timeMatches.every(m => m === '00:00'));
+                        const remainingTimes = plausibleMatches.filter(t => t !== '00:00' || plausibleMatches.every(m => m === '00:00'));
 
                         // Tildel tidsværdier baseret på position
                         // Første tid efter de 4 standard tabs (kø, mistet, besvaret, svarprocent) er typisk maxWait

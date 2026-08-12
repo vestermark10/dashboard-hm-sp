@@ -43,6 +43,9 @@ class TelephonyService {
       { hour: 16, minute: 0 }
     ];
 
+    // Tæller konsekutive fejl i træk (bruges kun til alarm-logging, nulstilles ved succes)
+    this.consecutiveFailures = 0;
+
     // Mockdata hvis CSV ikke er tilgængelig
     this.mockData = {
       hallmonitor: {
@@ -140,30 +143,46 @@ class TelephonyService {
             // Gem i cache
             this.cache.data = scrapedData;
             this.cache.lastFetch = new Date().toISOString();
+            this.consecutiveFailures = 0;
 
             console.log(`Telefoni: Scraping succesfuldt. Næste opdatering kl ${this.getNextUpdateTime()}`);
-            return this.cache.data;
+            return { ...this.cache.data, _source: 'scrape' };
           }
         } catch (scrapeError) {
           console.warn('Telefoni: Web scraping fejlede:', scrapeError.message);
         }
 
-        // Strategi 2: Brug cached data hvis tilgængelig
-        if (this.cache.data) {
-          console.log('Telefoni: Bruger cached data (scraping fejlede)');
-          return this.cache.data;
+        // Strategi 2: CSV fallback (data/telephony/*.csv)
+        try {
+          const csvData = await telephonyCsvParser.parseLatestCsv();
+          if (telephonyCsvParser.validateData(csvData)) {
+            this.cache.data = csvData;
+            this.cache.lastFetch = new Date().toISOString();
+            this.consecutiveFailures = 0;
+
+            this.raiseAlarm('Web scraping fejlede - bruger CSV fallback');
+            return { ...this.cache.data, _source: 'csv' };
+          }
+        } catch (csvError) {
+          console.warn('Telefoni: CSV fallback fejlede:', csvError.message);
         }
 
-        // Strategi 3: Fallback til mockdata
-        console.log('Telefoni: Bruger mockdata (ingen cached data tilgængelig)');
-        return this.mockData;
+        // Strategi 3: Brug cached data hvis tilgængelig
+        if (this.cache.data) {
+          this.raiseAlarm('Scraping og CSV fejlede begge - bruger sidst kendte cached data');
+          return { ...this.cache.data, _source: 'stale-cache' };
+        }
+
+        // Strategi 4: Fallback til mockdata
+        this.raiseAlarm('Scraping, CSV og cache fejlede alle - viser mockdata, INGEN rigtig telefonidata');
+        return { ...this.mockData, _source: 'mock' };
       } else {
         console.log(`Telefoni: Bruger cached data fra ${new Date(this.cache.lastFetch).toLocaleTimeString('da-DK')}. Næste opdatering kl ${this.getNextUpdateTime()}`);
-        console.log('Telefoni: Cache data:', this.cache.data ? 'findes' : 'findes IKKE');
         if (!this.cache.data) {
-          console.log('Telefoni: ADVARSEL - Cache er tom, bruger mockdata');
+          this.raiseAlarm('Cache er tom uden for opdateringsvinduet - viser mockdata');
+          return { ...this.mockData, _source: 'mock' };
         }
-        return this.cache.data || this.mockData;
+        return { ...this.cache.data, _source: 'cache' };
       }
 
     } catch (error) {
@@ -171,14 +190,25 @@ class TelephonyService {
 
       // Returner cached data hvis tilgængelig
       if (this.cache.data) {
-        console.log('Telefoni: Returner cached data pga. fejl');
-        return this.cache.data;
+        this.raiseAlarm(`Uventet fejl (${error.message}) - bruger cached data`);
+        return { ...this.cache.data, _source: 'stale-cache' };
       }
 
       // Fallback til mockdata
-      console.log('Telefoni: Fallback til mockdata pga. fejl');
-      return this.mockData;
+      this.raiseAlarm(`Uventet fejl (${error.message}) - bruger mockdata`);
+      return { ...this.mockData, _source: 'mock' };
     }
+  }
+
+  /**
+   * Logger en tydelig, synlig advarsel når telefonidata falder til et degraderet niveau
+   * (CSV, stale cache eller mock i stedet for frisk scraping). Der findes endnu ikke nogen
+   * ekstern alarmering (Slack/e-mail) i projektet, så dette gør fejlen synlig i serverloggen
+   * i stedet for at fejle stille.
+   */
+  raiseAlarm(reason) {
+    this.consecutiveFailures++;
+    console.error(`🚨 ALARM [Telefoni] ${new Date().toISOString()} - ${reason} (${this.consecutiveFailures}. fejl i træk)`);
   }
 
   /**
