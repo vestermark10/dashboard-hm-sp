@@ -84,13 +84,40 @@ class OneConnectScraper {
     }
 
     /**
-     * Scraper kø-statistik fra dashboard
+     * Scraper kø-statistik fra dashboard.
+     *
+     * Genbruger browseren mellem scrapes (se _scrapeOnce), men en genbrugt session kan
+     * lande på andre skærmbilleder end en frisk login gør (fx en "/welcome"-side med en
+     * onboarding-tour i stedet for "/dashboard" direkte). Hvis et scrape fejler mens vi
+     * genbrugte browseren, tvinger vi derfor en helt frisk browser/login og prøver én
+     * gang til, før vi giver op - det er den robusthed en fuld genstart af appen ellers
+     * gav ved et uheld.
      */
     async scrapeQueueStats() {
+        const wasReused = this.browser?.isConnected() && this.page && !this.page.isClosed();
+
         try {
-            // Genbrug eksisterende browser/page hvis den stadig lever - relancering af en hel
-            // headless Chromium ved hvert scrape (op til ~17 gange/dag) er unødvendigt dyrt.
-            // Luk og genstart kun hvis browseren/siden er død (fx crashet mellem to scrapes).
+            return await this._scrapeOnce();
+        } catch (error) {
+            if (!wasReused) {
+                throw error; // Var allerede en frisk browser - et retry vil ikke ændre noget
+            }
+
+            console.warn('OneConnect: Scraping fejlede med en genbrugt browser/session - forcerer frisk browser og prøver igen:', error.message);
+            await this.close();
+
+            return await this._scrapeOnce();
+        }
+    }
+
+    /**
+     * Selve scrape-forsøget. Genbruger eksisterende browser/page hvis den stadig lever -
+     * relancering af en hel headless Chromium ved hvert scrape (op til ~17 gange/dag) er
+     * unødvendigt dyrt. Luk og genstart kun hvis browseren/siden er død, eller hvis den
+     * ydre scrapeQueueStats() har lukket den efter en fejlet genbrugt session.
+     */
+    async _scrapeOnce() {
+        try {
             const browserIsHealthy = this.browser?.isConnected() && this.page && !this.page.isClosed();
             if (!browserIsHealthy) {
                 if (this.browser) {
@@ -135,7 +162,10 @@ class OneConnectScraper {
 
                 let foundButton = true;
                 let clickCount = 0;
-                const maxClicks = 4; // Sikkerhedsgrænse for at undgå uendelig loop
+                // Sikkerhedsgrænse for at undgå uendelig loop. En genbrugt/reused session kan
+                // lande på en "/welcome"-side med en længere onboarding-tour (flere dialoger
+                // i træk) end en frisk login gør - sat højt nok til at rumme det.
+                const maxClicks = 10;
 
                 while (foundButton && clickCount < maxClicks) {
                     foundButton = await this.page.evaluate(() => {
@@ -164,7 +194,12 @@ class OneConnectScraper {
                 if (clickCount === 0) {
                     console.log('OneConnect: Ingen popup fundet.');
                 } else if (clickCount >= maxClicks) {
-                    console.log('OneConnect: Nåede max antal popup-klik.');
+                    // Log hvilke knapper der stadig findes, så en evt. fremtidig fejl her er
+                    // nemmere at diagnosticere uden at skulle gætte igen.
+                    const remainingButtonTexts = await this.page.evaluate(() =>
+                        Array.from(document.querySelectorAll('button')).map(b => b.textContent.trim()).filter(Boolean)
+                    );
+                    console.log('OneConnect: Nåede max antal popup-klik. Resterende knapper:', remainingButtonTexts);
                 } else {
                     console.log('OneConnect: Alle popups lukket.');
                 }
@@ -192,7 +227,7 @@ class OneConnectScraper {
             }
 
             // Vent på at dashboard er loaded - vent på widget-queue elementer
-            await this.page.waitForSelector('.widget-queue', { timeout: 10000 });
+            await this.page.waitForSelector('.widget-queue', { timeout: 15000 });
 
             console.log('OneConnect: Scraper kø data...');
 
