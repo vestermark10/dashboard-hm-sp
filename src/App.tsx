@@ -345,6 +345,17 @@ export default function App()
     return "text-red-400";
   };
 
+  // "Velkommen hjem, Emil": vises udelukkende mandag d. 17. august 2026 kl. 07:45-08:15
+  const emilWelcomeNow = new Date();
+  const isEmilWelcomeWindow =
+    emilWelcomeNow.getFullYear() === 2026 &&
+    emilWelcomeNow.getMonth() === 7 && // august (0-indekseret)
+    emilWelcomeNow.getDate() === 17 &&
+    (() => {
+      const minutesSinceMidnight = emilWelcomeNow.getHours() * 60 + emilWelcomeNow.getMinutes();
+      return minutesSinceMidnight >= 7 * 60 + 45 && minutesSinceMidnight <= 8 * 60 + 15;
+    })();
+
   // End-of-day celebration: grøn glow på individuelle KPI-bokse
   const isAfter15 = new Date().getHours() >= 15;
   const hmClosedWins = isAfter15 && (jiraSupport?.hallmonitor?.closedToday ?? 0) > (jiraSupport?.hallmonitor?.newToday ?? 0);
@@ -371,6 +382,9 @@ export default function App()
       {/* Celebration animations */}
       {celebrations.some(e => e.daysUntil === 0 && e.type === 'birthday') && <FallingFlags />}
       {celebrations.some(e => e.daysUntil === 0 && e.type === 'anniversary') && <RisingRockets />}
+
+      {/* "Velkommen hjem, Emil" - fly der flyver subtilt hen over skærmen, kun mandag d. 17. august 2026 kl. 07:45-08:15 */}
+      {isEmilWelcomeWindow && <FlyingPlanes />}
 
       {/* Outage Alert Popup */}
       {showOutagePopup && status?.hasOutage && (
@@ -629,8 +643,14 @@ export default function App()
         </div>
 
         {/* Fødselsdage og jubilæer */}
-        {celebrations.length > 0 && (
+        {(celebrations.length > 0 || isEmilWelcomeWindow) && (
           <div className="flex items-center justify-center gap-8 py-1.5">
+            {isEmilWelcomeWindow && (
+              <div className="flex items-center gap-2 text-base font-semibold tracking-tight text-white">
+                <PlaneIcon />
+                <span>Velkommen hjem, Emil</span>
+              </div>
+            )}
             {celebrations.map((event, i) => (
               <div key={i} className="flex items-center gap-2 text-base font-semibold tracking-tight text-white">
                 {event.type === 'birthday' ? <DannebroFlag /> : <RocketIcon />}
@@ -1530,6 +1550,75 @@ function RisingRockets() {
         .animate-rocket-rise {
           animation-name: rocket-rise;
           animation-timing-function: ease-out;
+          animation-fill-mode: forwards;
+        }
+      `}</style>
+    </div>
+  );
+}
+
+/* --- Fly-ikon (SVG, da emojis ikke virker på Windows/Linux) --- */
+
+function PlaneIcon({ size = 20 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" className="inline-block">
+      <path
+        d="M21 16v-2l-8-5V3.5c0-.83-.67-1.5-1.5-1.5S10 2.67 10 3.5V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5l8 2.5z"
+        fill="#e2e8f0"
+      />
+    </svg>
+  );
+}
+
+/* --- "Velkommen hjem, Emil"-animation: Fly flyver subtilt hen over skærmen --- */
+
+function FlyingPlanes() {
+  const [planes, setPlanes] = useState<{ id: number; top: number; delay: number; duration: number }[]>([]);
+
+  useEffect(() => {
+    let id = 0;
+    const spawn = () => {
+      setPlanes(prev => {
+        const active = prev.filter(p => Date.now() - p.id < p.duration * 1000);
+        return [...active, {
+          id: Date.now() + id++,
+          top: 10 + Math.random() * 70,
+          delay: 0,
+          duration: 20 + Math.random() * 10,
+        }];
+      });
+    };
+
+    spawn();
+    // Nyt fly hvert 12-22 sekund - holdes subtilt og sjældent
+    const interval = setInterval(spawn, 12000 + Math.random() * 10000);
+    return () => clearInterval(interval);
+  }, []);
+
+  return (
+    <div className="pointer-events-none fixed inset-0 z-40 overflow-hidden">
+      {planes.map(plane => (
+        <div
+          key={plane.id}
+          className="absolute opacity-50 animate-plane-fly"
+          style={{
+            top: `${plane.top}%`,
+            animationDuration: `${plane.duration}s`,
+            animationDelay: `${plane.delay}s`,
+            transform: 'rotate(90deg)', // ikonet peger opad i sin grundform - drej 90° så næsen peger til højre
+          }}
+        >
+          <PlaneIcon size={26} />
+        </div>
+      ))}
+      <style>{`
+        @keyframes plane-fly {
+          0% { left: -40px; }
+          100% { left: 105%; }
+        }
+        .animate-plane-fly {
+          animation-name: plane-fly;
+          animation-timing-function: linear;
           animation-fill-mode: forwards;
         }
       `}</style>
