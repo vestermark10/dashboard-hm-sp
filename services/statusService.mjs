@@ -264,17 +264,24 @@ class StatusService {
         const contentLower = content.toLowerCase();
         const isResolved = titleLower.includes('[resolved]') ||
                           titleLower.includes('[ended]') ||
+                          titleLower.includes('[cancelled]') ||
                           contentLower.includes('resolved') ||
                           contentLower.includes('this incident has been resolved');
         const isPending = titleLower.includes('pending:') ||
-                          titleLower.includes('[pending]');
+                          titleLower.includes('[pending]') ||
+                          titleLower.includes('[upcoming]');
+
+        // Elavons feed dækker ALLE deres produkter og indeholder mest planlagt
+        // vedligeholdelse ("Maintenance"), som ikke er driftsrelevante fejl.
+        // Kun rigtige incidents (uden "Maintenance" i titlen) skal vises som outage.
+        const isMaintenance = titleLower.includes('maintenance');
 
         // Tjek om det er en aktiv incident (inden for de sidste 24 timer og ikke resolved)
         const updatedDate = new Date(updated);
         const hoursSinceUpdate = (Date.now() - updatedDate.getTime()) / (1000 * 60 * 60);
 
-        // Kun aktive incidents: ikke resolved, ikke pending, inden for 24 timer
-        if (!isResolved && !isPending && hoursSinceUpdate < 24) {
+        // Kun aktive incidents: ikke resolved, ikke pending, ikke vedligeholdelse, inden for 24 timer
+        if (!isResolved && !isPending && !isMaintenance && hoursSinceUpdate < 24) {
           activeIncidents.push({
             id,
             title: this.stripHtml(title),
