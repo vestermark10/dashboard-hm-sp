@@ -6,6 +6,7 @@ import jiraService from './services/jiraService.mjs';
 import economicService from './services/economicService.mjs';
 import statusService from './services/statusService.mjs';
 import celebrationService from './services/celebrationService.mjs';
+import oneConnectScraper from './services/oneConnectScraper.mjs';
 
 const app = express();
 const PORT = 3001;
@@ -120,7 +121,7 @@ app.get("/api/celebrations", (req, res) => {
   }
 });
 
-app.listen(PORT, async () => {
+const server = app.listen(PORT, async () => {
   console.log(`Backend kører på http://localhost:${PORT}`);
 
   // Preload telefoni data ved opstart
@@ -132,3 +133,25 @@ app.listen(PORT, async () => {
     console.error('Fejl ved preload af telefoni data:', error.message);
   }
 });
+
+// Enhver SIGTERM-listener slår Nodes standard-exit fra, så denne skal selv kalde
+// process.exit - ellers holder den åbne server processen i live til systemd's
+// stop-timeout (90 s) udløber.
+async function shutdown(signal) {
+  console.log(`${signal} modtaget - lukker ned...`);
+  setTimeout(() => {
+    console.error('Nedlukning tog for lang tid - tvinger exit');
+    process.exit(1);
+  }, 10000).unref();
+
+  server.close();
+  try {
+    await oneConnectScraper.close();
+  } catch (error) {
+    console.error('Fejl ved lukning af OneConnect browser:', error.message);
+  }
+  process.exit(0);
+}
+
+process.once('SIGTERM', () => shutdown('SIGTERM'));
+process.once('SIGINT', () => shutdown('SIGINT'));

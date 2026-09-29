@@ -162,7 +162,7 @@ The One-Connect scraper maintains a persistent browser instance:
 - Launched once on first scrape attempt
 - Reused for subsequent scrapes
 - Uses headless mode with specific Chrome flags for server compatibility
-- Browser/page cleanup handled by Node.js process lifecycle
+- Puppeteer's own signal handlers are disabled (`handleSIGTERM: false` etc.); `server.mjs` owns SIGTERM/SIGINT, closing the browser and then calling `process.exit`. Keep it that way: Puppeteer's handler closes only the browser, so the open HTTP server keeps Node alive until systemd's stop timeout kills it
 
 ### JQL Query Strategy
 Jira queries use `statusCategory != Done` instead of listing specific open statuses. This is more resilient to custom workflow configurations.
@@ -176,10 +176,12 @@ data/
 
 ## Deployment Notes
 
+- Backend deploy pipeline is the `Jenkinsfile` at the repo root (runs on the Raspberry Pi agent, deploys via rsync and restarts `dashboard-backend.service`)
+
 - Frontend API URL configured in `src/config.ts` - automatically switches based on Vite build mode
 - Backend credentials stored in `.env` file (gitignored) - never commit this file
 - Vite base path set to `/operations-dashboard/` - affects asset paths in production
-- Backend preloads telephony data on startup to warm the cache (`server.mjs:82-89`)
+- Backend preloads telephony data on startup to warm the cache (the `app.listen` callback in `server.mjs`)
 - Puppeteer requires Chrome/Chromium binaries available in deployment environment
 
 ## External API References

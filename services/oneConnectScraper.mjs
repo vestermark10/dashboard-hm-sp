@@ -35,6 +35,12 @@ class OneConnectScraper {
         this.browser = await puppeteer.launch({
             executablePath: '/usr/bin/chromium',
             headless: 'new',
+            // Puppeteers egne handlers lukker kun browseren uden at afslutte Node, så den
+            // åbne HTTP-server holder processen i live til systemd SIGKILL'er den.
+            // Nedlukning ved signaler ejes af server.mjs.
+            handleSIGINT: false,
+            handleSIGTERM: false,
+            handleSIGHUP: false,
             args: [
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
